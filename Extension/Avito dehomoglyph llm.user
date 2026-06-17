@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Dehomoglyph + LLM (SPA, мост к расширению)
 // @namespace    dehomoglyph
-// @version      5.0.1
+// @version      5.1.0
 // @description  Исправляет подмену латиница<->кириллица на Avito. Фаза 1 — быстрая эвристика; фаза 2 — доуточнение неоднозначных токенов локальной LLM через безопасный мост к расширению.
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -452,16 +452,76 @@
       setTimeout(() => { if (_chall.has(nonce)) { _chall.delete(nonce); reject(new Error('мост не ответил (расширение установлено? секрет совпадает?)')); } }, 4000);
     });
   }
-  async function llmAdjudicate(items, reasoning) {
+  // Копия buildMessages/parseVerdict из llm-backends.js (userscript строит промпт сам).
+  const LLM_SYSTEM =
+    'Определи, каким алфавитом ПО СМЫСЛУ записано выделенное слово в русском объявлении — кириллица или латиница.\n' +
+    'Проверяй В ТАКОМ ПОРЯДКЕ:\n' +
+    'ШАГ 1. Обозначает ли слово физическую величину или цену — напряжение, ток, мощность, частоту, вес, ' +
+    'размер, длину, объём, деньги? Если ДА → КИРИЛЛИЦА, даже если рядом стоят USB, зарядка, прицеп, диск. ' +
+    'Единица остаётся единицей независимо от технического окружения. ' +
+    'Примеры: 5B при USB = вольты → кириллица; 2.1A = амперы → кириллица; 500p = рубли → кириллица; 5T у прицепа = тонны → кириллица.\n' +
+    'ШАГ 2. Только если это НЕ величина и НЕ цена: название/модель/стандарт/разъём/код/бренд или единица ' +
+    'цифровой памяти? Тогда → ЛАТИНИЦА. Примеры: iPhone 5C, 5S → латиница; type C, USB, HDMI → латиница; ' +
+    '5T у жёсткого диска = терабайты → латиница; Yahoo = бренд; ABC = латинское слово.\n' +
+    'Русские слова и предлоги (с, в, о) — кириллица.';
+  function buildLLMMessages(token, context, title, reasoning) {
+    const tail = reasoning
+      ? 'Кратко (1 предложение) объясни смысл, затем последней строкой строго: ВЕРДИКТ: кириллица ИЛИ ВЕРДИКТ: латиница'
+      : 'Ответь одним словом: кириллица или латиница';
+    // Помечаем конкретный токен маркером ⟦…⟧ прямо в контексте — LLM видит точную позицию.
+    const markedCtx = context.replace(token, '⟦' + token + '⟧');
+    const user =
+      (title ? 'Объявление: "' + title + '"\n' : '') +
+      'Фраза: "' + markedCtx + '"\nСлово: "' + token + '"';
+    return [
+      { role: 'system', content: LLM_SYSTEM + '\n' + tail },
+      { role: 'user', content: user },
+    ];
+  }
+  function parseLLMVerdict(text) {
+    const norm = (w) => (/кир/i.test(w) || /^cyr/i.test(w) ? 'cyr' : 'lat');
+    const m = [...text.matchAll(/ВЕРДИКТ\s*:\s*(кириллиц\w*|латиниц\w*|cyr|lat)/gi)];
+    if (m.length) return norm(m[m.length - 1][1]);
+    const t = text.toLowerCase();
+    const hasCyr = /кириллиц/.test(t) || /\bcyr\b/.test(t);
+    const hasLat = /латиниц/.test(t) || /\blat\b/.test(t);
+    if (hasCyr && !hasLat) return 'cyr';
+    if (hasLat && !hasCyr) return 'lat';
+    const lc = Math.max(t.lastIndexOf('кириллиц'), t.lastIndexOf('cyr'));
+    const ll = Math.max(t.lastIndexOf('латиниц'), t.lastIndexOf('lat'));
+    if (lc === -1 && ll === -1) return null;
+    return lc > ll ? 'cyr' : 'lat';
+  }
+
+  // Отправка одного chat-запроса через мост (одна HMAC-рукопожатие на вызов).
+  async function llmChat(jobId, messages, options) {
     const challenge = await getChallenge();
     const requestId = randId();
-    const payload = { items, reasoning: !!reasoning };
+    const payload = { cmd: 'chat', jobId, messages, options, meta: { client: 'avito-dehomoglyph', task: 'verify-token' } };
     const proof = await hmac(BRIDGE_SECRET, challenge + '|' + requestId + '|' + JSON.stringify(payload));
     return new Promise((resolve, reject) => {
       _pending.set(requestId, { resolve, reject });
       bpost({ type: 'request', requestId, challenge, proof, payload });
-      setTimeout(() => { if (_pending.has(requestId)) { _pending.delete(requestId); reject(new Error('LLM не ответила (таймаут)')); } }, LLM.bridgeTimeoutMs);
+      setTimeout(() => {
+        if (_pending.has(requestId)) { _pending.delete(requestId); reject(new Error('LLM не ответила (таймаут)')); }
+      }, LLM.bridgeTimeoutMs);
     });
+  }
+
+  // Отмена списка jobId через мост.
+  async function llmCancel(jobIds) {
+    if (!jobIds || !jobIds.length) return;
+    try {
+      const challenge = await getChallenge();
+      const requestId = randId();
+      const payload = { cmd: 'cancel', jobIds };
+      const proof = await hmac(BRIDGE_SECRET, challenge + '|' + requestId + '|' + JSON.stringify(payload));
+      await new Promise((resolve) => {
+        _pending.set(requestId, { resolve, reject: resolve });
+        bpost({ type: 'request', requestId, challenge, proof, payload });
+        setTimeout(() => { _pending.delete(requestId); resolve(); }, 4000);
+      });
+    } catch {}
   }
 
   function pageTitle() {
@@ -493,6 +553,7 @@
   }
 
   let phase2Running = false;
+  let currentSession = [];   // jobId-ы текущей сессии (для отмены)
   async function runLLMPhase() {
     if (!LLM.enabled || phase2Running) return;
     if (LLM.onlyCardPage && !isCardPage()) { ui.setStatus('LLM: только на карточке объявления'); return; }
@@ -529,27 +590,39 @@
       if (!fresh.length) { ui.setStatus('LLM: новых спорных токенов нет' + (cachedHits.length ? ' (кэш: ' + cachedHits.length + ')' : '')); return; }
 
       const title = pageTitle();
-      ui.setStatus('LLM: отправляю ' + fresh.length + ' токенов…');
-      ui.log('фаза 2: ' + fresh.length + ' новых токенов → LLM' + (cachedHits.length ? ', ' + cachedHits.length + ' из кэша' : ''));
-      const resp = await llmAdjudicate(fresh.map((c) => ({ token: c.token, context: c.sentence, title })), LLM.reasoning);
-      if (!resp || !resp.ok) { ui.setStatus('LLM: ошибка'); ui.log('ошибка LLM: ' + (resp && resp.error)); return; }
+      const sessionId = randId().slice(0, 8);
+      const sessionJobIds = fresh.map((_, i) => sessionId + '-' + i);
+      currentSession = sessionJobIds.slice();   // для кнопки «Стоп»
 
+      ui.setStatus('LLM: отправляю ' + fresh.length + ' токенов…');
+      ui.log('фаза 2: ' + fresh.length + ' → LLM' + (cachedHits.length ? ', ' + cachedHits.length + ' из кэша' : '') + ' [сессия ' + sessionId + ']');
+
+      // Запускаем N параллельных chat-запросов; каждый встаёт в очередь на стороне аддона.
+      // Результаты применяем к DOM по мере прихода (не ждём всех).
       if (observer) observer.disconnect();
-      let applied = 0, confirmed = 0;
-      resp.results.forEach((r, i) => {
-        const c = fresh[i];
-        if (r.script) {
-          verdictCache.set(c.token + '|' + c.sentence, r.script);   // запоминаем вердикт
-          // если convert ничего не меняет — LLM подтвердил уже верный скрипт,
-          // это валидный «вердикт принят», просто без правки DOM.
-          const noop = convert(c.token, r.script) === c.token;
-          if (applyVerdict(c.node, c.token, r.script)) applied++;
-          else if (noop) confirmed++;
-        }
-        ui.log('  ' + c.token + ' → ' + (r.script || '—') +
-          (r.script && convert(c.token, r.script) === c.token ? ' (подтверждено, уже верно)' : ''));
+      let applied = 0, confirmed = 0, done = 0;
+      const jobs = fresh.map((c, i) => {
+        const msgs = buildLLMMessages(c.token, c.sentence, title, LLM.reasoning);
+        return llmChat(sessionJobIds[i], msgs, { reasoning: LLM.reasoning, max_tokens: 200 })
+          .then((resp) => {
+            if (!resp || !resp.ok || resp.cancelled) return;
+            const script = parseLLMVerdict(resp.raw || '');
+            if (script) {
+              verdictCache.set(c.token + '|' + c.sentence, script);
+              const noop = convert(c.token, script) === c.token;
+              if (applyVerdict(c.node, c.token, script)) applied++;
+              else if (noop) confirmed++;
+            }
+            done++;
+            ui.log('  ' + c.token + ' → ' + (script || '—') +
+              (script && convert(c.token, script) === c.token ? ' (подтверждено)' : ''));
+            ui.setStatus('LLM: ' + done + '/' + fresh.length + ' (применено ' + applied + ')');
+          })
+          .catch((e) => { ui.log('  ' + c.token + ' → ошибка: ' + (e && e.message)); done++; });
       });
-      saveCache();   // память вердиктов переживёт перезагрузку
+      await Promise.allSettled(jobs);
+      currentSession = [];
+      saveCache();
       connect();
       ui.setStatus('LLM: применено ' + applied + ', подтверждено ' + confirmed + '/' + fresh.length);
       ui.log('фаза 2 завершена: применено ' + applied + ', подтверждено ' + confirmed);
@@ -586,6 +659,7 @@
           '<label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="dh-reason"> Рассуждение в фазе 2 (медленнее)</label>' +
           '<div style="display:flex;gap:6px">' +
             '<button id="dh-run" style="flex:1;padding:6px 10px;border:0;border-radius:7px;background:#16a34a;color:#fff;cursor:pointer">Запустить LLM</button>' +
+            '<button id="dh-stop" style="padding:6px 10px;border:0;border-radius:7px;background:#92400e;color:#fff;cursor:pointer" title="Отменить текущую очередь LLM">Стоп</button>' +
             '<button id="dh-clear" style="padding:6px 10px;border:0;border-radius:7px;background:#b91c1c;color:#fff;cursor:pointer" title="Очистить запомненные вердикты">Память ✕</button>' +
           '</div>' +
           '<div id="dh-status" style="font-size:11px;color:#555">готово</div>' +
@@ -614,6 +688,13 @@
       cbReason.onchange = () => { LLM.reasoning = cbReason.checked; saveCfg(); };
       inMax.onchange = () => { const v = parseInt(inMax.value); if (v > 0) { LLM.maxTokens = v; saveCfg(); } };
       panel.querySelector('#dh-run').onclick = () => runLLMPhase();
+      panel.querySelector('#dh-stop').onclick = async () => {
+        if (!currentSession.length) { ui.log('нечего останавливать'); return; }
+        ui.log('отмена сессии (' + currentSession.length + ' задач)…');
+        await llmCancel(currentSession.slice());
+        currentSession = [];
+        ui.setStatus('LLM: отменено');
+      };
       panel.querySelector('#dh-clear').onclick = () => {
         const n = verdictCache.size; verdictCache.clear(); saveCache();
         ui.log('память очищена (' + n + ' вердиктов удалено)');
@@ -629,13 +710,15 @@
         ui.setStatus('LLM: спрашиваю «' + token + '»…');
         ui.log('── ручной запрос: «' + token + '» ──');
         try {
-          const resp = await llmAdjudicate([{ token, context: ctx, title }], true);
+          const msgs = buildLLMMessages(token, ctx, title, true);
+          const jobId = randId();
+          const resp = await llmChat(jobId, msgs, { reasoning: true, max_tokens: 400 });
           if (!resp || !resp.ok) { ui.log('ошибка: ' + (resp && resp.error)); ui.setStatus('LLM: ошибка'); return; }
-          const r = (resp.results && resp.results[0]) || {};
-          ui.log('вердикт: ' + (r.script || '—'));
-          ui.log('рассуждение модели:');
-          ui.log((r.raw || '(пусто)').trim());
-          ui.setStatus('LLM: ответ получен (' + (r.script || '—') + ')');
+          const script = parseLLMVerdict(resp.raw || '');
+          ui.log('вердикт: ' + (script || '—'));
+          ui.log('── ответ модели ──');
+          ui.log((resp.raw || '(пусто)').trim());
+          ui.setStatus('LLM: ответ получен (' + (script || '—') + ')');
         } catch (e) { ui.log('сбой: ' + (e && e.message)); ui.setStatus('LLM: сбой'); }
       };
     }

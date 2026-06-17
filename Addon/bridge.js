@@ -86,7 +86,10 @@
         if (proof !== expect) { post({ dir: "to-page", type: "response", requestId, error: "auth failed" }); return; }
 
         // запрос подлинный → форвардим фону по ВНУТРЕННЕМУ каналу (сайт сюда не лезет)
-        const resp = await api.runtime.sendMessage({ cmd: "adjudicate", items: payload.items || [], reasoning: payload.reasoning });
+        const ALLOWED_CMDS = new Set(["chat", "cancel"]);
+        const cmd = typeof payload.cmd === "string" && ALLOWED_CMDS.has(payload.cmd) ? payload.cmd : null;
+        if (!cmd) { post({ dir: "to-page", type: "response", requestId, error: "неизвестная команда: " + payload.cmd }); return; }
+        const resp = await api.runtime.sendMessage({ cmd, ...payload });
         post({ dir: "to-page", type: "response", requestId, result: resp });
         return;
       }

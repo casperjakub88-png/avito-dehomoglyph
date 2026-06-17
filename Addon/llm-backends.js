@@ -62,6 +62,17 @@ class LLMBackend {
   // единичный запрос -> сырой текст ответа модели
   async _complete(_messages) { throw new Error("not implemented"); }
 
+  // публичный метод универсального моста: клиент передаёт готовые messages,
+  // options временно перекрывают cfg-значения (сериализовано очередью bg — без гонок).
+  async chat(messages, options = {}) {
+    if (!this.ready) await this.init();
+    const saved = { maxTokens: this.opts.maxTokens, reasoning: this.opts.reasoning };
+    if (options.max_tokens != null) this.opts.maxTokens = options.max_tokens;
+    if (typeof options.reasoning === "boolean") this.opts.reasoning = options.reasoning;
+    try { return await this._complete(messages); }
+    finally { Object.assign(this.opts, saved); }
+  }
+
   // общий обход списка с дроблением нагрузки (пауза между токенами против TDR).
   // shouldStop — необязательная функция: если вернёт true, цикл прервётся между токенами
   // (на середине запроса прервать нельзя — WebLLM не даёт отменить вычисление).
@@ -214,4 +225,5 @@ function createBackend(type, opts = {}) {
 
 // экспорт через глобальную область (фоновая страница MV2 исполняет обычные скрипты,
 // не ES-модули, поэтому НЕ используем export — кладём всё в self.LLMBackends).
+// buildMessages / parseVerdict экспортируются для userscript'ов (копируют себе).
 self.LLMBackends = { LLMBackend, WebLLMBackend, OllamaBackend, createBackend, buildMessages, parseVerdict };

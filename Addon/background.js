@@ -41,8 +41,45 @@ try {
 
 let backend = null;             // активный бэкенд (WebLLMBackend | OllamaBackend)
 let stopFlag = false;           // запрос на остановку текущего прогона
-let modelChain = Promise.resolve(); // цепочка сериализации запросов к модели (очередь)
-let queueLen = 0;               // длина очереди (для информирования)
+
+// ── Приоритетная очередь задач ───────────────────────────────────────────────
+// priority: 1 = высший, 9 = низший (по умолчанию 5).
+// Каждый job: { jobId, priority, meta, aborted, run(), resolve(), reject() }
+class PriorityQueue {
+  constructor() { this._q = []; }
+  push(job) {
+    const i = this._q.findIndex(j => j.priority > job.priority);
+    if (i === -1) this._q.push(job); else this._q.splice(i, 0, job);
+  }
+  remove(jobId) {
+    const i = this._q.findIndex(j => j.jobId === jobId);
+    if (i !== -1) { this._q.splice(i, 1); return true; }
+    return false;
+  }
+  shift() { return this._q.shift(); }
+  get length() { return this._q.length; }
+  snapshot() { return this._q.map(j => ({ jobId: j.jobId, priority: j.priority, client: j.meta && j.meta.client })); }
+}
+const jobQueue = new PriorityQueue();
+const activeJobs = new Map();   // jobId -> job (в очереди или выполняется прямо сейчас)
+let runnerBusy = false;
+
+function emitQueueState() {
+  emit("queue", { len: jobQueue.length + (runnerBusy ? 1 : 0), jobs: jobQueue.snapshot() });
+}
+async function runQueue() {
+  if (runnerBusy) return;
+  while (jobQueue.length > 0) {
+    runnerBusy = true;
+    const job = jobQueue.shift();
+    emitQueueState();
+    try { await job.run(); } catch (e) {
+      try { job.resolve({ ok: false, error: e?.message || String(e) }); } catch {}
+    }
+    runnerBusy = false;
+  }
+  emitQueueState();
+}
 let cfg = {
   type: "webllm",               // 'webllm' | 'ollama'
   modelId: "gemma-2-9b-it-q4f16_1-MLC",
@@ -235,7 +272,7 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
       switch (msg.cmd) {
         case "getConfig":
-          sendResponse({ ok: true, cfg, status: backend ? (backend.ready ? "ready" : "idle") : "none", logLines: LOG_BUF.slice(), report: lastReport });
+          sendResponse({ ok: true, cfg, status: backend ? (backend.ready ? "ready" : "idle") : "none", logLines: LOG_BUF.slice(), report: lastReport, queue: { len: jobQueue.length + (runnerBusy ? 1 : 0), jobs: jobQueue.snapshot() } });
           break;
 
         case "listCaches": {
@@ -379,27 +416,70 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
-        case "adjudicate": {
-          // ОЧЕРЕДЬ: запросы к модели сериализуются (движок не любит параллельные
-          // генерации). Разные скрипты/вкладки встают в очередь и ждут ответа.
-          const items = msg.items || [];
-          const pos = queueLen++;
-          if (pos > 0) { log("запрос в очереди (позиция " + pos + ")"); emit("queued", { pos }); }
-          const job = modelChain.then(async () => {
-            const b = await ensureLoaded((p) => emit("progress", p.text || p));
-            // per-request переключение рассуждения (сериализовано очередью, без гонок)
-            if (typeof msg.reasoning === "boolean") b.opts.reasoning = msg.reasoning;
-            return b.adjudicate(items, (i, r) =>
-              emit("item", { i, total: items.length, token: r.token, script: r.script, recovered: !!r.recovered })
-            );
-          });
-          modelChain = job.then(() => {}, () => {}); // цепочка не рвётся на ошибке
-          try {
-            const results = await job;
-            sendResponse({ ok: true, results });
-          } finally {
-            queueLen--;
+        case "chat": {
+          // Универсальный вызов LLM. Клиент строит messages сам; мост только транспорт.
+          // priority 1..9 (1 = первый); jobId — клиентский UUID (≤64 симв).
+          const { jobId, messages, options = {}, meta = {} } = msg;
+          const priority = Math.max(1, Math.min(9, (msg.priority | 0) || 5));
+          if (!jobId || typeof jobId !== "string" || jobId.length > 64) {
+            sendResponse({ ok: false, error: "jobId: непустая строка ≤64 симв" }); break;
           }
+          if (activeJobs.has(jobId)) {
+            sendResponse({ ok: false, error: "jobId уже в очереди: " + jobId }); break;
+          }
+          if (!Array.isArray(messages) || !messages.length) {
+            sendResponse({ ok: false, error: "messages: непустой массив" }); break;
+          }
+          const client = (meta.client || "unknown").slice(0, 40);
+          const task   = (meta.task   || "").slice(0, 40);
+
+          const job = { jobId, priority, meta, aborted: false, resolve: null };
+          const promise = new Promise(res => { job.resolve = res; });
+          job.run = async () => {
+            activeJobs.delete(jobId);
+            if (job.aborted) { job.resolve({ ok: false, cancelled: true }); return; }
+            log("[chat] client=" + client + (task ? " task=" + task : "") + " msgs=" + messages.length + " prio=" + priority);
+            const b = await ensureLoaded((p) => emit("progress", p.text || p));
+            try {
+              const raw = await b.chat(messages, options);
+              log("[chat] ← " + client + " " + raw.length + " симв");
+              job.resolve({ ok: true, raw });
+            } catch (e) {
+              log("[chat] ERR " + client + ": " + (e?.message || e));
+              job.resolve({ ok: false, error: e?.message || String(e) });
+            }
+          };
+
+          activeJobs.set(jobId, job);
+          jobQueue.push(job);
+          const pos = jobQueue.length + (runnerBusy ? 1 : 0) - 1;
+          if (pos > 0) log("[chat] " + jobId.slice(0, 8) + " в очереди (поз. " + pos + ")");
+          emitQueueState();
+          runQueue();
+
+          sendResponse(await promise);
+          break;
+        }
+
+        case "cancel": {
+          // Отмена по массиву jobId. Ждущие в очереди — удаляем немедленно.
+          // Выполняющийся в данный момент — помечаем: завершится с {cancelled:true}.
+          const ids = Array.isArray(msg.jobIds) ? msg.jobIds : [];
+          let cancelled = 0;
+          for (const id of ids) {
+            const job = activeJobs.get(id);
+            if (!job) continue;
+            job.aborted = true;
+            if (jobQueue.remove(id)) {
+              activeJobs.delete(id);
+              job.resolve({ ok: false, cancelled: true });
+            }
+            // если уже выполняется — aborted=true; job.run() вернёт cancelled:true
+            cancelled++;
+          }
+          emitQueueState();
+          log("[cancel] отменено: " + cancelled + "/" + ids.length);
+          sendResponse({ ok: true, cancelled });
           break;
         }
 
