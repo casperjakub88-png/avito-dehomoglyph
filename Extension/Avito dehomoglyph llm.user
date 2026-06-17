@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Dehomoglyph + LLM (SPA, мост к расширению)
 // @namespace    dehomoglyph
-// @version      5.0.0
+// @version      5.0.1
 // @description  Исправляет подмену латиница<->кириллица на Avito. Фаза 1 — быстрая эвристика; фаза 2 — доуточнение неоднозначных токенов локальной LLM через безопасный мост к расширению.
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -164,7 +164,7 @@
         let last = 0, m; LETTERS.lastIndex = 0;
         while ((m = LETTERS.exec(chunk)) !== null) {
           if (m.index > last) units.push({ fixed: chunk.slice(last, m.index) });
-          units.push({ word: true, text: m[0], hasDigit, len: m[0].length, group, script: classify(m[0]), resolved: null });
+          units.push({ word: true, text: m[0], hasDigit, chunkText: chunk, len: m[0].length, group, script: classify(m[0]), resolved: null });
           last = m.index + m[0].length;
         }
         if (last < chunk.length) units.push({ fixed: chunk.slice(last) });
@@ -253,6 +253,11 @@
         }
         const sc = letterScript(u.text);
         if (u.hasDigit) {
+          // 2c: модельный код вида "Р-0010" / "P-0010" (буква — дефис — цифры).
+          // Одиночная confusable-буква здесь смыслово неоднозначна: «Р-0010»
+          // в техконтексте обычно лат. P, а «5В/2.1А» — кириллица. Отличие —
+          // буква стоит ПЕРЕД дефисом+цифрами, а не после цифр. Гоним в LLM.
+          if (/^[A-Za-zЀ-ӿ]-\d/.test(u.chunkText || '')) { u.resolved = null; continue; }
           if (sc === 'lat' && UNIT_LATIN.has(u.text) && docLang === 'cyr') u.resolved = 'cyr'; // 5B->5В, 500p->500р
           else if (sc === 'lat') u.resolved = 'lat';                 // 5S/5C — модель
           else u.resolved = 'cyr';                                   // 5В/2.1А — уже кириллица, уверенно cyr (НЕ в LLM)
@@ -530,19 +535,24 @@
       if (!resp || !resp.ok) { ui.setStatus('LLM: ошибка'); ui.log('ошибка LLM: ' + (resp && resp.error)); return; }
 
       if (observer) observer.disconnect();
-      let applied = 0;
+      let applied = 0, confirmed = 0;
       resp.results.forEach((r, i) => {
         const c = fresh[i];
         if (r.script) {
           verdictCache.set(c.token + '|' + c.sentence, r.script);   // запоминаем вердикт
+          // если convert ничего не меняет — LLM подтвердил уже верный скрипт,
+          // это валидный «вердикт принят», просто без правки DOM.
+          const noop = convert(c.token, r.script) === c.token;
           if (applyVerdict(c.node, c.token, r.script)) applied++;
+          else if (noop) confirmed++;
         }
-        ui.log('  ' + c.token + ' → ' + (r.script || '—'));
+        ui.log('  ' + c.token + ' → ' + (r.script || '—') +
+          (r.script && convert(c.token, r.script) === c.token ? ' (подтверждено, уже верно)' : ''));
       });
       saveCache();   // память вердиктов переживёт перезагрузку
       connect();
-      ui.setStatus('LLM: применено ' + applied + '/' + fresh.length);
-      ui.log('фаза 2 завершена: применено ' + applied);
+      ui.setStatus('LLM: применено ' + applied + ', подтверждено ' + confirmed + '/' + fresh.length);
+      ui.log('фаза 2 завершена: применено ' + applied + ', подтверждено ' + confirmed);
     } catch (e) {
       ui.setStatus('LLM: сбой');
       ui.log('сбой фазы 2: ' + (e && e.message));
