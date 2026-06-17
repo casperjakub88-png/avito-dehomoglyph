@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 13px system-ui; width: 420px; margin: 0; padding: 12px; color: #111; }
+  h1 { font-size: 15px; margin: 0 0 10px; }
+  .row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  label { font-size: 12px; color: #444; }
+  select, input { padding: 5px 7px; border: 1px solid #ccc; border-radius: 6px; font: 12px system-ui; }
+  button { padding: 6px 12px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; font: 12px system-ui; }
+  button.sec { background: #6b7280; }
+  button:disabled { background: #9ca3af; }
+  #status { color: #555; }
+  #log { margin-top: 8px; background: #0b1020; color: #cbd5e1; font: 11px/1.4 ui-monospace,monospace; white-space: pre-wrap; padding: 8px; border-radius: 6px; height: 220px; overflow: auto; }
+  .seg { display:flex; border:1px solid #2563eb; border-radius:6px; overflow:hidden }
+  .seg button { background:#fff; color:#2563eb; border-radius:0 }
+  .seg button.on { background:#2563eb; color:#fff }
+  #summary { margin-top: 8px; }
+  .sum-row { display:flex; justify-content:space-between; padding:3px 8px; border-radius:5px; margin-bottom:3px; font-size:12px; }
+  .sum-ok { background:#dcfce7; color:#166534; }
+  .sum-bad { background:#fee2e2; color:#991b1b; }
+  .sum-row b { font-weight:600; }
+  .cache-row { display:flex; justify-content:space-between; align-items:center; padding:4px 8px; background:#f3f4f6; border-radius:5px; margin-bottom:3px; font-size:11px; }
+  .cache-row button { padding:2px 8px; font-size:11px; background:#b91c1c; }
+</style>
+</head>
+<body>
+  <h1>LLM-адъюдикатор</h1>
+
+  <div class="row">
+    <label>Бэкенд:</label>
+    <div class="seg">
+      <button id="be-webllm" class="on">WebLLM (GPU)</button>
+      <button id="be-ollama">Ollama</button>
+    </div>
+    <span id="status">—</span>
+  </div>
+
+  <div id="webllm-cfg">
+    <div class="row">
+      <label>Модель:</label>
+      <select id="model" style="flex:1"></select>
+      <button id="list" class="sec" title="Подтянуть все модели">⟳</button>
+    </div>
+  </div>
+
+  <div id="ollama-cfg" style="display:none">
+    <div class="row">
+      <label>Адрес:</label><input id="ohost" value="http://localhost:11434" style="flex:1">
+    </div>
+    <div class="row">
+      <label>Модель:</label><input id="omodel" value="qwen2.5:7b" style="flex:1">
+    </div>
+  </div>
+
+  <div class="row">
+    <label>пауза мс</label><input id="delay" type="number" value="60" style="width:60px">
+    <label>макс. ток.</label><input id="maxtok" type="number" value="200" style="width:60px">
+    <label><input id="reason" type="checkbox" checked> рассуждение</label>
+  </div>
+
+  <div class="row">
+    <button id="load">Загрузить</button>
+    <button id="unload" class="sec" disabled>Выгрузить</button>
+    <button id="test" class="sec">Прогнать тест</button>
+    <button id="clear" class="sec" title="Удалить все скачанные модели" style="background:#b91c1c">Очистить кэш</button>
+  </div>
+
+  <details style="margin-top:8px">
+    <summary style="cursor:pointer;font-size:12px;color:#444">Секрет моста и кэш моделей</summary>
+    <div class="row" style="margin-top:8px">
+      <label>Секрет:</label>
+      <input id="secret" type="text" style="flex:1" placeholder="общая строка с userscript'ом">
+      <button id="saveSecret" class="sec">Сохранить</button>
+    </div>
+    <div style="font-size:11px;color:#888;margin-bottom:6px">Та же строка должна стоять в userscript'е (константа BRIDGE_SECRET).</div>
+    <div class="row">
+      <button id="listCaches" class="sec">Показать кэш моделей</button>
+    </div>
+    <div id="caches"></div>
+  </details>
+
+  <div id="summary"></div>
+  <div id="log"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+{
+  "manifest_version": 2,
+  "name": "Avito LLM adjudicator",
+  "version": "0.1",
+  "description": "Локальная LLM-модель в фоне расширения (WebLLM/Ollama) + адъюдикация кириллица/латиница. Модель живёт одна на все вкладки.",
+
+  "browser_specific_settings": {
+    "gecko": { "id": "avito-llm-adjudicator@local", "strict_min_version": "115.0" }
+  },
+
+  "permissions": [
+    "storage",
+    "webRequest",
+    "webRequestBlocking",
+    "*://www.avito.ru/*",
+    "*://*.avito.ru/*",
+    "https://cdn.jsdelivr.net/*",
+    "https://esm.sh/*",
+    "https://raw.githubusercontent.com/*",
+    "https://huggingface.co/*",
+    "https://*.huggingface.co/*",
+    "https://*.hf.co/*",
+    "https://cas-bridge.xethub.hf.co/*",
+    "https://*.xethub.hf.co/*",
+    "https://cdn-lfs.huggingface.co/*",
+    "https://cdn-lfs-us-1.huggingface.co/*",
+    "http://localhost/*"
+  ],
+
+  "background": {
+    "page": "background.html",
+    "persistent": true
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["*://www.avito.ru/*", "*://*.avito.ru/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_start"
+    }
+  ],
+
+  "browser_action": {
+    "default_title": "LLM adjudicator",
+    "default_popup": "popup.html"
+  },
+
+  "content_security_policy": "script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://esm.sh; object-src 'self'; connect-src 'self' https://cdn.jsdelivr.net https://esm.sh https://raw.githubusercontent.com https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://*.hf.co https://cas-bridge.xethub.hf.co https://*.xethub.hf.co http://localhost:11434"
+}

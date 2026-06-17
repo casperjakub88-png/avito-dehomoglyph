@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"></head>
+<body>
+<!-- Фоновая страница: полноценный документ → здесь доступен navigator.gpu.
+     Подключаем ОБЫЧНЫМИ скриптами по порядку (НЕ модулями): сначала
+     абстракция бэкендов (кладёт self.LLMBackends), затем логика фона. -->
+<script src="llm-backends.js"></script>
+<script src="background.js"></script>
+</body>
+</html>
