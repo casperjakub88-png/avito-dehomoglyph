@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Dehomoglyph + LLM (SPA, мост к расширению)
 // @namespace    dehomoglyph
-// @version      5.1.0
+// @version      5.1.1
 // @description  Исправляет подмену латиница<->кириллица на Avito. Фаза 1 — быстрая эвристика; фаза 2 — доуточнение неоднозначных токенов локальной LLM через безопасный мост к расширению.
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -49,6 +49,7 @@
     descriptionOnly: true, // на карточке — только блок описания
     maxTokens:    20,      // не больше N спорных токенов за проход (настраивается в окне)
     reasoning:    false,   // массовая фаза 2 — без рассуждения (быстрее); ручной вопрос всегда с рассуждением
+    verbose:       false,   // логировать prompt и raw-ответ LLM
     bridgeTimeoutMs: 600000,
   };
   const TAG = '__avitoLLMBridge';
@@ -63,7 +64,7 @@
   function loadPersisted() {
     try {
       const c = JSON.parse(localStorage.getItem(LS_CFG) || '{}');
-      for (const k of ['enabled', 'duplicate', 'onlyCardPage', 'descriptionOnly', 'maxTokens', 'reasoning'])
+      for (const k of ['enabled', 'duplicate', 'onlyCardPage', 'descriptionOnly', 'maxTokens', 'reasoning', 'verbose'])
         if (k in c) LLM[k] = c[k];
     } catch {}
     try {
@@ -603,9 +604,15 @@
       let applied = 0, confirmed = 0, done = 0;
       const jobs = fresh.map((c, i) => {
         const msgs = buildLLMMessages(c.token, c.sentence, title, LLM.reasoning);
+        if (LLM.verbose) {
+          ui.log('→ LLM [' + c.token + '] context: ' + msgs[1].content.replace(/\n/g, ' | '));
+        }
         return llmChat(sessionJobIds[i], msgs, { reasoning: LLM.reasoning, max_tokens: 200 })
           .then((resp) => {
             if (!resp || !resp.ok || resp.cancelled) return;
+            if (LLM.verbose && resp.raw) {
+              ui.log('← LLM [' + c.token + ']: ' + resp.raw.trim());
+            }
             const script = parseLLMVerdict(resp.raw || '');
             if (script) {
               verdictCache.set(c.token + '|' + c.sentence, script);
@@ -657,6 +664,7 @@
           '<label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="dh-desc"> На карточке — только описание</label>' +
           '<label style="display:flex;align-items:center;gap:6px">Лимит токенов: <input type="number" id="dh-max" min="1" max="200" style="width:60px;padding:3px 5px;border:1px solid #ccc;border-radius:5px"></label>' +
           '<label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="dh-reason"> Рассуждение в фазе 2 (медленнее)</label>' +
+          '<label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="dh-verbose"> Verbose: лог prompt + ответ LLM</label>' +
           '<div style="display:flex;gap:6px">' +
             '<button id="dh-run" style="flex:1;padding:6px 10px;border:0;border-radius:7px;background:#16a34a;color:#fff;cursor:pointer">Запустить LLM</button>' +
             '<button id="dh-stop" style="padding:6px 10px;border:0;border-radius:7px;background:#92400e;color:#fff;cursor:pointer" title="Отменить текущую очередь LLM">Стоп</button>' +
@@ -677,15 +685,17 @@
       panel.querySelector('#dh-min').onclick = () => { panel.style.display = 'none'; bubble.style.display = 'flex'; };
       const cbLlm = panel.querySelector('#dh-llm'), cbDup = panel.querySelector('#dh-dup'),
             cbCard = panel.querySelector('#dh-card'), cbDesc = panel.querySelector('#dh-desc'),
-            cbReason = panel.querySelector('#dh-reason'), inMax = panel.querySelector('#dh-max');
+            cbReason = panel.querySelector('#dh-reason'), cbVerbose = panel.querySelector('#dh-verbose'),
+            inMax = panel.querySelector('#dh-max');
       cbLlm.checked = LLM.enabled; cbDup.checked = LLM.duplicate;
       cbCard.checked = LLM.onlyCardPage; cbDesc.checked = LLM.descriptionOnly;
-      cbReason.checked = LLM.reasoning; inMax.value = LLM.maxTokens;
+      cbReason.checked = LLM.reasoning; cbVerbose.checked = LLM.verbose; inMax.value = LLM.maxTokens;
       cbLlm.onchange = () => { LLM.enabled = cbLlm.checked; saveCfg(); };
       cbDup.onchange = () => { LLM.duplicate = cbDup.checked; saveCfg(); };
       cbCard.onchange = () => { LLM.onlyCardPage = cbCard.checked; saveCfg(); };
       cbDesc.onchange = () => { LLM.descriptionOnly = cbDesc.checked; saveCfg(); };
       cbReason.onchange = () => { LLM.reasoning = cbReason.checked; saveCfg(); };
+      cbVerbose.onchange = () => { LLM.verbose = cbVerbose.checked; saveCfg(); };
       inMax.onchange = () => { const v = parseInt(inMax.value); if (v > 0) { LLM.maxTokens = v; saveCfg(); } };
       panel.querySelector('#dh-run').onclick = () => runLLMPhase();
       panel.querySelector('#dh-stop').onclick = async () => {
