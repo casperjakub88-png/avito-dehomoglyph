@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Dehomoglyph + LLM (SPA, мост к расширению)
 // @namespace    dehomoglyph
-// @version      5.1.2
+// @version      5.1.3
 // @description  Исправляет подмену латиница<->кириллица на Avito. Фаза 1 — быстрая эвристика; фаза 2 — доуточнение неоднозначных токенов локальной LLM через безопасный мост к расширению.
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -477,7 +477,12 @@
     'ШАГ 2. Только если это НЕ величина и НЕ цена: название/модель/стандарт/разъём/код/бренд или единица ' +
     'цифровой памяти? Тогда → ЛАТИНИЦА. Примеры: iPhone 5C, 5S → латиница; type C, USB, HDMI → латиница; ' +
     '5T у жёсткого диска = терабайты → латиница; Yahoo = бренд; ABC = латинское слово.\n' +
-    'Русские слова и предлоги (с, в, о) — кириллица.';
+    'Русские слова и предлоги (с, в, о) — кириллица.\n' +
+    'ШАГ 3. ТАЙМ-БРЕЙКЕР (только если шаги 1–2 не дали однозначного ответа): ' +
+    'если выделенная буква стоит в модельном коде или серийном номере (буквы+цифры, ' +
+    'дефис+цифры — например «P-0010», «SFU2PD»), а остальной контекст фразы содержит ' +
+    'преимущественно латинские слова (бренды, стандарты, коды), выбери → ЛАТИНИЦА. ' +
+    'Не возвращай «невозможно определить» — всегда давай один из двух вердиктов.';
   function buildLLMMessages(token, context, offset, title, reasoning) {
     const tail = reasoning
       ? 'Кратко (1 предложение) объясни смысл, затем последней строкой строго: ВЕРДИКТ: кириллица ИЛИ ВЕРДИКТ: латиница'
@@ -548,7 +553,7 @@
   }
 
   function pageTitle() {
-    const h1 = document.querySelector('.js-item-view-title-info, [itemprop="name"], h1');
+    const h1 = document.querySelector('[data-marker="item-view/title-info"], .js-item-view-title-info, [itemprop="name"], h1');
     return (h1 && h1.textContent || '').trim().slice(0, 120);
   }
   function descriptionRoot() {
@@ -623,7 +628,7 @@
       // Запускаем N параллельных chat-запросов; каждый встаёт в очередь на стороне аддона.
       // Результаты применяем к DOM по мере прихода (не ждём всех).
       if (observer) observer.disconnect();
-      let applied = 0, confirmed = 0, done = 0;
+      let applied = 0, confirmed = 0, noVerdict = 0, done = 0;
       const jobs = fresh.map((c, i) => {
         const msgs = buildLLMMessages(c.token, c.sentence, c.sentOffset, title, LLM.reasoning);
         if (LLM.verbose) {
@@ -641,9 +646,9 @@
               const noop = convert(c.token, script) === c.token;
               if (applyVerdict(c.node, c.token, script)) applied++;
               else if (noop) confirmed++;
-            }
+            } else { noVerdict++; }
             done++;
-            ui.log('  ' + c.token + ' → ' + (script || '—') +
+            ui.log('  ' + c.token + ' → ' + (script || '— (нет вердикта)') +
               (script && convert(c.token, script) === c.token ? ' (подтверждено)' : ''));
             ui.setStatus('LLM: ' + done + '/' + fresh.length + ' (применено ' + applied + ')');
           })
@@ -653,8 +658,11 @@
       currentSession = [];
       saveCache();
       connect();
-      ui.setStatus('LLM: применено ' + applied + ', подтверждено ' + confirmed + '/' + fresh.length);
-      ui.log('фаза 2 завершена: применено ' + applied + ', подтверждено ' + confirmed);
+      const parts = ['применено ' + applied];
+      if (confirmed) parts.push('подтверждено ' + confirmed);
+      if (noVerdict) parts.push('без вердикта ' + noVerdict);
+      ui.setStatus('LLM: ' + parts.join(', ') + '/' + fresh.length);
+      ui.log('фаза 2 завершена: ' + parts.join(', '));
     } catch (e) {
       ui.setStatus('LLM: сбой');
       ui.log('сбой фазы 2: ' + (e && e.message));
