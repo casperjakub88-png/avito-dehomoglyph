@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Dehomoglyph + LLM (SPA, мост к расширению)
 // @namespace    dehomoglyph
-// @version      5.1.3
+// @version      5.1.4
 // @description  Исправляет подмену латиница<->кириллица на Avito. Фаза 1 — быстрая эвристика; фаза 2 — доуточнение неоднозначных токенов локальной LLM через безопасный мост к расширению.
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -239,7 +239,14 @@
       if (!u.word || u.script !== 'ambig' || u.resolved !== null) continue;
       if (u.len === 1) {
         const sib = groupSibling(units, i);
-        if (sib) { u.resolved = sib; continue; }                    // TYPE-С -> по латинскому TYPE
+        // groupSibling='lat' надёжен (TYPE, USB — настоящие латинские якоря).
+        // groupSibling='cyr' — НЕТ: «Туре-С» = «Type-C», но «Туре» имеет кирилличный
+        // якорь «у», что некорректно тянет С в cyr. Заглавные одиночные → LLM.
+        if (sib === 'lat') { u.resolved = 'lat'; continue; }
+        if (sib === 'cyr' && (u.text === u.text.toLowerCase() || u.text !== u.text.toUpperCase())) {
+          u.resolved = 'cyr'; continue;   // строчная buква (предлог «с» в «Туре-с») — ок
+        }
+        // заглавная одиночная с cyr-соседом — неоднозначно, отдаём в LLM (resolved=null)
         // 2c: одиночная c/с сразу после слова "type" (через пробел/дефис) — это type-c
         if (/^[cсC]$/.test(u.text)) {
           const prevWord = prevWordUnit(units, i);
