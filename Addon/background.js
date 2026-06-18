@@ -142,21 +142,26 @@ async function ensureLoaded(onProgress) {
   return b;
 }
 
-// ── Тестовые токены для проверки инференса ──────────────────────────────────
-const TEST = [
-  { token: "50р-р", title: "Пиджак Emporio Armani", context: "Пиджак emporio armani johnny line 50р-р", expect: "?" },
-  { token: "500p",  title: "Чехлы оптом",            context: "За опт скидка 500p, осталось 10 штук",     expect: "cyr" },
-  { token: "5B",    title: "Зарядное устройство USB", context: "Выход USB: 5B 2.1 A (Auto Max)",           expect: "cyr" },
-  { token: "2.1A",  title: "Быстрая зарядка",         context: "Выход USB: 5B 2.1A быстрая зарядка",        expect: "cyr" },
-  { token: "5T",    title: "Жёсткий диск Toshiba",    context: "Жёсткий диск 5T корпоративного класса",    expect: "lat" },
-  { token: "5T",    title: "Прицеп бортовой",         context: "Прицеп грузоподъёмность 5T, аренда",       expect: "cyr" },
-  { token: "C",     title: "Зарядка для телефона",    context: "Зарядка для штекера type C, быстрая",      expect: "lat" },
-  { token: "5C",    title: "iPhone 5C",               context: "Продам iPhone 5C белый, оригинал",         expect: "lat" },
-  { token: "5S",    title: "Apple iPhone 5S",         context: "iPhone 5S 16гб, состояние хорошее",        expect: "lat" },
-  { token: "c",     title: "Магазин электроники",     context: "официально работаем c 2022 года",          expect: "cyr" },
-  { token: "Yahoo", title: "Выкуп из Японии",         context: "Выкуп с Yahoo Auctions Japan",             expect: "lat" },
-  { token: "ABC",   title: "Корпус для телефона",      context: "Материал корпуса: пластик ABC",            expect: "lat" },
+// ── Бенчмарк скорости: один и тот же запрос с контекстом РАЗНОЙ длины ────────
+// Проверка точности (латиница/кириллица) перенесена в userscript; здесь —
+// только производительность: обработка ввода (prefill), генерация (decode),
+// полный цикл (end-to-end) на коротком/среднем/длинном промпте.
+const BENCH_SET = [
+  { label: "короткий (~15 слов)",  words: 15,  maxTokens: 80 },
+  { label: "средний (~120 слов)",  words: 120, maxTokens: 80 },
+  { label: "длинный (~400 слов)",  words: 400, maxTokens: 80 },
 ];
+// Промпт фиксированной длины генерации (перечисление чисел) + контекст-нагрузка
+// заданного объёма. Так decode-метрика стабильна, а prefill растёт с длиной ввода.
+function buildBenchMessages(approxWords) {
+  const unit = "Сетевой фильтр удлинитель розетки порты зарядка кабель адаптер питание устройство корпус ";
+  const filler = unit.repeat(Math.ceil(approxWords / 10)).trim().split(/\s+/).slice(0, approxWords).join(" ");
+  return [
+    { role: "system", content: "Ты ассистент. Выполняй задание строго и кратко." },
+    { role: "user", content: "Контекст (это нагрузка, смысл игнорируй): " + filler +
+        "\n\nЗадание: перечисли через запятую целые числа от 1 до 40." },
+  ];
+}
 
 // лёгкая сетевая проба: дошёл ли запрос и прочитался ли ответ (CSP/CORS)
 async function probe(url, label) {
@@ -232,33 +237,38 @@ async function diagnose() {
   report.summary.load = loadOk;
   if (!loadOk) { lastReport = report; emit("report", report); return report; }
 
-  // 4. Инференс + точность + учёт TDR (+ возможность прерывания)
-  let ok = 0, scored = 0, lost = 0, errs = 0;
-  const rows = [];
+  // 4. Бенчмарк скорости: prefill (обработка ввода), decode (генерация), e2e
+  const prompts = BENCH_SET.map((b) => ({ label: b.label, messages: buildBenchMessages(b.words), maxTokens: b.maxTokens }));
   const t0 = performance.now();
-  stopFlag = false;
-  const results = await backend.adjudicate(TEST, (i, r) => {
-    emit("item", { i, total: TEST.length, token: r.token, script: r.script, recovered: !!r.recovered });
-    if (r.recovered) lost++;
-    if (r.script === null) errs++;
-  }, () => stopFlag);
-  const aborted = !!results.aborted;
-  results.forEach((r, i) => {
-    const exp = TEST[i].expect;
-    if (exp !== "?") { scored++; if (r.script === exp) ok++; }
-    rows.push({ token: TEST[i].token, got: r.script, expect: exp, ok: exp === "?" ? null : r.script === exp });
+  const rows = await backend.bench(prompts, (i, row) => {
+    emit("item", {
+      i, total: prompts.length, token: row.label,
+      script: row.ok ? (row.decodeTps != null ? Math.round(row.decodeTps) + " ток/с" : Math.round(row.totalMs) + " мс") : "ERR",
+    });
+    if (row.ok) {
+      log("· " + row.label + ": ввод " + row.promptTokens + " ток" +
+          (row.prefillTps != null ? " @ " + Math.round(row.prefillTps) + " ток/с" : "") +
+          ", генерация " + row.genTokens + " ток" +
+          (row.decodeTps != null ? " @ " + Math.round(row.decodeTps) + " ток/с" : "") +
+          ", e2e " + Math.round(row.totalMs) + " мс");
+    } else {
+      log("· " + row.label + ": ОШИБКА — " + row.error);
+    }
   });
   const ms = Math.round(performance.now() - t0);
-  step(aborted ? "Инференс прерван" : "Инференс", !aborted && errs === 0,
-       "обработано " + results.length + "/" + TEST.length + ", точность " + ok + "/" + scored +
-       ", " + ms + "мс" + (results.length ? " (~" + Math.round(ms / results.length) + "мс/токен)" : "") +
-       (lost ? ", восстановлений после TDR: " + lost : "") + (errs ? ", без вердикта: " + errs : "") +
-       (aborted ? " — остановлено пользователем" : ""));
-  report.summary.infer = { ok, scored, ms, lost, errs, aborted, done: results.length, total: TEST.length };
-  report.rows = rows;
+  const okRows = rows.filter((r) => r.ok);
+  const errs = rows.length - okRows.length;
+  const avg = (sel) => { const v = okRows.map(sel).filter((x) => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  const avgPrefill = avg((r) => r.prefillTps), avgDecode = avg((r) => r.decodeTps);
+  step("Бенчмарк скорости", errs === 0,
+       (avgDecode != null ? "генерация ~" + Math.round(avgDecode) + " ток/с" : "") +
+       (avgPrefill != null ? ", обработка ввода ~" + Math.round(avgPrefill) + " ток/с" : "") +
+       ", всего " + ms + " мс" + (errs ? ", ошибок: " + errs : ""));
+  report.summary.bench = { rows, ms, avgPrefill, avgDecode, errs };
 
   log("════ ИТОГ: окружение " + (report.summary.env ? "✓" : "✗") + ", сеть " + (netOk ? "✓" : "✗") +
-      ", загрузка " + (loadOk ? "✓" : "✗") + ", точность " + ok + "/" + scored + " ════");
+      ", загрузка " + (loadOk ? "✓" : "✗") +
+      (avgDecode != null ? ", генерация ~" + Math.round(avgDecode) + " ток/с" : "") + " ════");
   lastReport = report;
   emit("report", report);
   return report;

@@ -73,6 +73,35 @@ class LLMBackend {
     finally { Object.assign(this.opts, saved); }
   }
 
+  // запрос с замером производительности -> { content, promptTokens, genTokens,
+  // prefillTps, decodeTps, totalMs }. Переопределяется в каждом бэкенде (источник
+  // метрик разный: WebLLM отдаёт usage.extra, Ollama — *_eval_count/_duration).
+  async _completeStats(_messages) { throw new Error("not implemented"); }
+
+  // ── Бенчмарк скорости (без проверки точности) ──────────────────────────────
+  // prompts: [{ label, messages, maxTokens }] — обычно одинаковый текст разной длины.
+  // Возвращает массив строк-замеров; onItem(i, row) — для прогресс-бара UI.
+  async bench(prompts, onItem) {
+    if (!this.ready) await this.init();
+    const out = [];
+    const savedMax = this.opts.maxTokens;
+    for (let i = 0; i < prompts.length; i++) {
+      const p = prompts[i];
+      if (p.maxTokens != null) this.opts.maxTokens = p.maxTokens;
+      let row;
+      try {
+        const s = await this._completeStats(p.messages);
+        row = Object.assign({ label: p.label, ok: true }, s);
+      } catch (e) {
+        row = { label: p.label, ok: false, error: e?.message || String(e) };
+      }
+      this.opts.maxTokens = savedMax;
+      out.push(row);
+      if (onItem) onItem(i, row);
+    }
+    return out;
+  }
+
   // общий обход списка с дроблением нагрузки (пауза между токенами против TDR).
   // shouldStop — необязательная функция: если вернёт true, цикл прервётся между токенами
   // (на середине запроса прервать нельзя — WebLLM не даёт отменить вычисление).
@@ -152,6 +181,26 @@ class WebLLMBackend extends LLMBackend {
     return r.choices[0].message.content || "";
   }
 
+  // WebLLM кладёт метрики скорости в usage.extra (prefill_tokens_per_s — обработка
+  // ввода/prefill; decode_tokens_per_s — генерация; e2e_latency_s — полный цикл).
+  async _completeStats(messages) {
+    const t0 = performance.now();
+    const r = await this.engine.chat.completions.create({
+      messages, temperature: 0, max_tokens: this.opts.maxTokens,
+    });
+    const totalMs = performance.now() - t0;
+    const u = r.usage || {};
+    const ex = u.extra || {};
+    return {
+      content: r.choices[0].message.content || "",
+      promptTokens: u.prompt_tokens || 0,
+      genTokens: u.completion_tokens || 0,
+      prefillTps: ex.prefill_tokens_per_s ?? null,
+      decodeTps: ex.decode_tokens_per_s ?? null,
+      totalMs,
+    };
+  }
+
   // восстановление после потери GPU-устройства (TDR), один повтор
   async _onError(e, item) {
     const msg = (e?.message || String(e)).toLowerCase();
@@ -206,6 +255,30 @@ class OllamaBackend extends LLMBackend {
     if (!r.ok) throw new Error("Ollama HTTP " + r.status + " " + (await r.text()).slice(0, 200));
     const data = await r.json();
     return data.message?.content || "";
+  }
+
+  // Ollama отдаёт счётчики и длительности (в наносекундах): prompt_eval_* —
+  // обработка ввода (prefill), eval_* — генерация. tokens/s = count / (dur/1e9).
+  async _completeStats(messages) {
+    const t0 = performance.now();
+    const r = await fetch(this.host + "/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: this.model, stream: false, options: { temperature: 0, num_predict: this.opts.maxTokens }, messages }),
+    });
+    if (!r.ok) throw new Error("Ollama HTTP " + r.status + " " + (await r.text()).slice(0, 200));
+    const data = await r.json();
+    const totalMs = performance.now() - t0;
+    const pc = data.prompt_eval_count || 0, pd = data.prompt_eval_duration || 0;
+    const ec = data.eval_count || 0, ed = data.eval_duration || 0;
+    return {
+      content: data.message?.content || "",
+      promptTokens: pc,
+      genTokens: ec,
+      prefillTps: pd ? pc / (pd / 1e9) : null,
+      decodeTps: ed ? ec / (ed / 1e9) : null,
+      totalMs,
+    };
   }
 
   async listModels() {

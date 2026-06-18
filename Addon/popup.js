@@ -85,10 +85,25 @@ function renderReport(rep) {
   if ("env" in s) html += line("Окружение (GPU/адаптер)", s.env);
   if ("net" in s) html += line("Сеть (CDN/веса)", s.net);
   if ("load" in s) html += line("Загрузка модели", s.load);
-  if (s.infer) {
+  if (s.bench) {
+    const b = s.bench;
+    const ok = b.errs === 0;
+    const head = (b.avgDecode != null ? "генерация ~" + Math.round(b.avgDecode) + " ток/с" : "") +
+                 (b.avgPrefill != null ? ", ввод ~" + Math.round(b.avgPrefill) + " ток/с" : "");
+    html += line("Скорость (бенчмарк)", ok, head);
+    // построчно: длина промпта → prefill / decode / e2e
+    for (const r of (b.rows || [])) {
+      if (!r.ok) { html += `<div class="sum-row sum-bad" style="font-size:11px"><span>↳ ${r.label}</span><b>ERR</b></div>`; continue; }
+      const detail =
+        "ввод " + r.promptTokens + "т" + (r.prefillTps != null ? " @" + Math.round(r.prefillTps) + "/с" : "") +
+        " · ген " + r.genTokens + "т" + (r.decodeTps != null ? " @" + Math.round(r.decodeTps) + "/с" : "") +
+        " · " + Math.round(r.totalMs) + "мс";
+      html += `<div class="sum-row" style="font-size:11px;opacity:.85"><span>↳ ${r.label}</span><b>${detail}</b></div>`;
+    }
+  } else if (s.infer) {
+    // обратная совместимость со старыми отчётами
     const inf = s.infer;
-    const ok = inf.errs === 0;
-    html += line("Инференс", ok, "точность " + inf.ok + "/" + inf.scored + ", ~" + Math.round(inf.ms / 12) + "мс/ток" + (inf.lost ? ", TDR×" + inf.lost : ""));
+    html += line("Инференс", inf.errs === 0, "точность " + inf.ok + "/" + inf.scored);
   }
   $("summary").innerHTML = html;
 }

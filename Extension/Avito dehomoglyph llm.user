@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Dehomoglyph + LLM (SPA, мост к расширению)
 // @namespace    dehomoglyph
-// @version      5.1.7
+// @version      5.2.0
 // @description  Исправляет подмену латиница<->кириллица на Avito. Фаза 1 — быстрая эвристика; фаза 2 — доуточнение неоднозначных токенов локальной LLM через безопасный мост к расширению.
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -609,6 +609,51 @@
     return true;
   }
 
+  // ── Тест точности LLM (латиница/кириллица) ──────────────────────────────────
+  // Перенесён из аддона в скрипт: гоняем известные кейсы через тот же мост и
+  // промпт, что и боевая фаза 2, и сверяем вердикт с ожидаемым.
+  const ACCURACY_TEST = [
+    { token: '500p',  title: 'Чехлы оптом',             context: 'За опт скидка 500p, осталось 10 штук',     expect: 'cyr' },
+    { token: '5B',    title: 'Зарядное устройство USB', context: 'Выход USB: 5B 2.1 A (Auto Max)',           expect: 'cyr' },
+    { token: '2.1A',  title: 'Быстрая зарядка',         context: 'Выход USB: 5B 2.1A быстрая зарядка',        expect: 'cyr' },
+    { token: '5T',    title: 'Жёсткий диск Toshiba',    context: 'Жёсткий диск 5T корпоративного класса',    expect: 'lat' },
+    { token: '5T',    title: 'Прицеп бортовой',         context: 'Прицеп грузоподъёмность 5T, аренда',       expect: 'cyr' },
+    { token: 'C',     title: 'Зарядка для телефона',    context: 'Зарядка для штекера type C, быстрая',      expect: 'lat' },
+    { token: '5C',    title: 'iPhone 5C',               context: 'Продам iPhone 5C белый, оригинал',         expect: 'lat' },
+    { token: '5S',    title: 'Apple iPhone 5S',         context: 'iPhone 5S 16гб, состояние хорошее',        expect: 'lat' },
+    { token: 'c',     title: 'Магазин электроники',     context: 'официально работаем c 2022 года',          expect: 'cyr' },
+    { token: 'Yahoo', title: 'Выкуп из Японии',         context: 'Выкуп с Yahoo Auctions Japan',             expect: 'lat' },
+    { token: 'ABC',   title: 'Корпус для телефона',     context: 'Материал корпуса: пластик ABC',            expect: 'lat' },
+    { token: 'C',     title: 'Сетевой фильтр ЭРА',      context: '8 розеток+4xUSBA+C 1,5м 16А',              expect: 'lat' },
+  ];
+  let accTestRunning = false;
+  async function runAccuracyTest() {
+    if (accTestRunning) { ui.log('тест точности уже идёт'); return; }
+    accTestRunning = true;
+    ui.log('── тест точности: ' + ACCURACY_TEST.length + ' кейсов ──');
+    ui.setStatus('тест точности…');
+    let ok = 0, scored = 0, errs = 0;
+    try {
+      for (let i = 0; i < ACCURACY_TEST.length; i++) {
+        const t = ACCURACY_TEST[i];
+        const off = t.context.indexOf(t.token);
+        const msgs = buildLLMMessages(t.token, t.context, off, t.title, false);
+        let script = null;
+        try {
+          const resp = await llmChat(randId(), msgs, { reasoning: false, max_tokens: 60 });
+          if (resp && resp.ok) script = parseLLMVerdict(resp.raw || '');
+          else errs++;
+        } catch (e) { errs++; }
+        const hit = t.expect !== '?' && script === t.expect;
+        if (t.expect !== '?') { scored++; if (hit) ok++; }
+        ui.log((t.expect === '?' ? '·' : hit ? '✓' : '✗') + ' [' + (i + 1) + '/' + ACCURACY_TEST.length + '] "' +
+               t.token + '" → ' + (script || '—') + (t.expect !== '?' ? ' (ожид. ' + t.expect + ')' : ''));
+      }
+    } finally { accTestRunning = false; }
+    ui.log('── итог: точность ' + ok + '/' + scored + (errs ? ', ошибок ' + errs : '') + ' ──');
+    ui.setStatus('тест: точность ' + ok + '/' + scored + (errs ? ' (ошибок ' + errs + ')' : ''));
+  }
+
   let phase2Running = false;
   let currentSession = [];   // jobId-ы текущей сессии (для отмены)
   async function runLLMPhase() {
@@ -729,6 +774,7 @@
             '<button id="dh-stop" style="padding:6px 10px;border:0;border-radius:7px;background:#92400e;color:#fff;cursor:pointer" title="Отменить текущую очередь LLM">Стоп</button>' +
             '<button id="dh-clear" style="padding:6px 10px;border:0;border-radius:7px;background:#b91c1c;color:#fff;cursor:pointer" title="Очистить запомненные вердикты">Память ✕</button>' +
           '</div>' +
+          '<button id="dh-acctest" style="padding:6px 10px;border:0;border-radius:7px;background:#0891b2;color:#fff;cursor:pointer" title="Прогнать тест точности LLM (латиница/кириллица)">Тест точности LLM</button>' +
           '<div id="dh-status" style="font-size:11px;color:#555">готово</div>' +
           '<details style="margin-top:4px"><summary style="cursor:pointer;font-size:11px;color:#444">Спросить LLM вручную</summary>' +
             '<div style="display:flex;flex-direction:column;gap:4px;margin-top:5px">' +
@@ -769,6 +815,7 @@
         ui.log('память очищена (' + n + ' вердиктов удалено)');
         ui.setStatus('память пуста');
       };
+      panel.querySelector('#dh-acctest').onclick = () => runAccuracyTest();
 
       // ручной запрос: показать ПОЛНОЕ рассуждение модели по одному токену
       panel.querySelector('#dh-ask').onclick = async () => {
