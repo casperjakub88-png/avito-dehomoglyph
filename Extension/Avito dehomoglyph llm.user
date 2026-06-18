@@ -60,7 +60,9 @@
 
   /* ===================== ПАМЯТЬ (localStorage) ===================== */
   // Настройки и кэш вердиктов переживают перезагрузку и общие для всех вкладок.
-  const LS_CFG = 'avito_dh_cfg', LS_CACHE = 'avito_dh_cache';
+  const LS_CFG = 'avito_dh_cfg', LS_CACHE = 'avito_dh_cache', LS_CACHE_VER = 'avito_dh_cache_ver';
+  // Версия кэша: меняем при правках эвристики/якорей/промпта — старые вердикты инвалидируются.
+  const CACHE_VERSION = '5.1.6';
   function loadPersisted() {
     try {
       const c = JSON.parse(localStorage.getItem(LS_CFG) || '{}');
@@ -68,6 +70,12 @@
         if (k in c) LLM[k] = c[k];
     } catch {}
     try {
+      const ver = localStorage.getItem(LS_CACHE_VER);
+      if (ver !== CACHE_VERSION) {
+        localStorage.removeItem(LS_CACHE);
+        localStorage.setItem(LS_CACHE_VER, CACHE_VERSION);
+        return;
+      }
       const arr = JSON.parse(localStorage.getItem(LS_CACHE) || '[]');
       if (Array.isArray(arr)) for (const [k, v] of arr) verdictCache.set(k, v);
     } catch {}
