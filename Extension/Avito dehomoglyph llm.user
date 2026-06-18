@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Dehomoglyph + LLM (SPA, мост к расширению)
 // @namespace    dehomoglyph
-// @version      5.1.6
+// @version      5.1.7
 // @description  Исправляет подмену латиница<->кириллица на Avito. Фаза 1 — быстрая эвристика; фаза 2 — доуточнение неоднозначных токенов локальной LLM через безопасный мост к расширению.
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -62,7 +62,7 @@
   // Настройки и кэш вердиктов переживают перезагрузку и общие для всех вкладок.
   const LS_CFG = 'avito_dh_cfg', LS_CACHE = 'avito_dh_cache', LS_CACHE_VER = 'avito_dh_cache_ver';
   // Версия кэша: меняем при правках эвристики/якорей/промпта — старые вердикты инвалидируются.
-  const CACHE_VERSION = '5.1.6';
+  const CACHE_VERSION = '5.1.7';
   function loadPersisted() {
     try {
       const c = JSON.parse(localStorage.getItem(LS_CFG) || '{}');
@@ -596,12 +596,14 @@
     return document.body;
   }
 
-  function applyVerdict(node, token, script) {
+  function applyVerdict(node, token, script, pos) {
     if (!node || !node.isConnected || !script) return false;
     const conv = convert(token, script);
     if (conv === token) return false;
     const v = node.nodeValue;
-    const idx = v.indexOf(token);
+    // Используем точную позицию из коллектора (pos) — не indexOf, который берёт первое вхождение.
+    // Иначе "С|...предложение..." → lat применится к первой "С" в "Сетевой", а не к нужной.
+    let idx = (pos != null && v.substr(pos, token.length) === token) ? pos : v.indexOf(token);
     if (idx < 0) return false;
     node.nodeValue = v.slice(0, idx) + conv + v.slice(idx + token.length);
     return true;
@@ -637,7 +639,7 @@
       if (cachedHits.length) {
         if (observer) observer.disconnect();
         let ca = 0;
-        for (const h of cachedHits) if (h.script && applyVerdict(h.c.node, h.c.token, h.script)) ca++;
+        for (const h of cachedHits) if (h.script && applyVerdict(h.c.node, h.c.token, h.script, h.c.pos)) ca++;
         connect();
         ui.log('из кэша применено: ' + ca + '/' + cachedHits.length);
       }
@@ -671,7 +673,7 @@
             if (script) {
               verdictCache.set(c.token + '|' + c.sentence, script);
               const noop = convert(c.token, script) === c.token;
-              if (applyVerdict(c.node, c.token, script)) applied++;
+              if (applyVerdict(c.node, c.token, script, c.pos)) applied++;
               else if (noop) confirmed++;
             } else { noVerdict++; }
             done++;
