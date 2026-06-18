@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Dehomoglyph + LLM (SPA, мост к расширению)
 // @namespace    dehomoglyph
-// @version      5.1.4
+// @version      5.1.5
 // @description  Исправляет подмену латиница<->кириллица на Avito. Фаза 1 — быстрая эвристика; фаза 2 — доуточнение неоднозначных токенов локальной LLM через безопасный мост к расширению.
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -290,7 +290,7 @@
         out += u.text;
         if (collector && u.script === 'ambig' && u.resolved === null) {
           const ctx = contextAt(text, pos, u.text);
-          collector.push({ node, token: u.text, pos, sentence: ctx.sentence, sentOffset: ctx.offset });
+          collector.push({ node, token: u.text, pos, sentence: ctx.sentence, sentOffset: ctx.offset, chunkText: u.chunkText || '' });
         }
       }
     }
@@ -483,14 +483,16 @@
     'Примеры: 5B при USB = вольты → кириллица; 2.1A = амперы → кириллица; 500p = рубли → кириллица; 5T у прицепа = тонны → кириллица.\n' +
     'ШАГ 2. Только если это НЕ величина и НЕ цена: название/модель/стандарт/разъём/код/бренд или единица ' +
     'цифровой памяти? Тогда → ЛАТИНИЦА. Примеры: iPhone 5C, 5S → латиница; type C, USB, HDMI → латиница; ' +
-    '5T у жёсткого диска = терабайты → латиница; Yahoo = бренд; ABC = латинское слово.\n' +
+    '5T у жёсткого диска = терабайты → латиница; Yahoo = бренд; ABC = латинское слово. ' +
+    'Одиночная буква после списка разъёмов (4xUSBA+C, 2xUSB+C, USBA+C) ' +
+    'обозначает тип порта Type-C → ЛАТИНИЦА, это НЕ физическая единица.\n' +
     'Русские слова и предлоги (с, в, о) — кириллица.\n' +
     'ШАГ 3. ТАЙМ-БРЕЙКЕР (только если шаги 1–2 не дали однозначного ответа): ' +
     'если выделенная буква стоит в модельном коде или серийном номере (буквы+цифры, ' +
     'дефис+цифры — например «P-0010», «SFU2PD»), а остальной контекст фразы содержит ' +
     'преимущественно латинские слова (бренды, стандарты, коды), выбери → ЛАТИНИЦА. ' +
     'Не возвращай «невозможно определить» — всегда давай один из двух вердиктов.';
-  function buildLLMMessages(token, context, offset, title, reasoning) {
+  function buildLLMMessages(token, context, offset, title, reasoning, chunkText) {
     const tail = reasoning
       ? 'Кратко (1 предложение) объясни смысл, затем последней строкой строго: ВЕРДИКТ: кириллица ИЛИ ВЕРДИКТ: латиница'
       : 'Ответь одним словом: кириллица или латиница';
@@ -502,8 +504,16 @@
     } else {
       markedCtx = context.replace(token, '<<<' + token + '>>>');   // fallback
     }
+    // Если чанк значимо короче контекста — показываем его отдельно как «ближайшее
+    // окружение»: LLM не отвлекается на начало длинного предложения о фильтре/устройстве
+    // и видит главный сигнал («4xUSBA+<<<С>>>» = список разъёмов → Latin C).
+    const chunk = (chunkText || '').trim();
+    const chunkMarked = chunk && chunk !== context.trim() && chunk.includes(token)
+      ? chunk.replace(token, '<<<' + token + '>>>')
+      : '';
     const user =
       (title ? 'Объявление: "' + title + '"\n' : '') +
+      (chunkMarked ? 'Непосредственное окружение: "' + chunkMarked + '"\n' : '') +
       'Фраза: "' + markedCtx + '"\n' +
       'Внимание: оцени ИМЕННО ту букву "' + token + '", которая заключена в маркеры <<< >>> ' +
       '(в этой фразе может быть несколько таких букв — другие НЕ учитывай). ' +
@@ -560,8 +570,12 @@
   }
 
   function pageTitle() {
-    const h1 = document.querySelector('[data-marker="item-view/title-info"], .js-item-view-title-info, [itemprop="name"], h1');
-    return (h1 && h1.textContent || '').trim().slice(0, 120);
+    const h1 = document.querySelector('[data-marker="item-view/title-info"], .js-item-view-title-info, [itemprop="name"]');
+    const raw = (h1 && h1.textContent || '').trim();
+    // Отфильтровываем стоп-слова и слишком короткие строки — они не несут смысла для LLM.
+    const STOP = /^(главная|avito|авито|каталог|объявления|поиск|фильтр|корзина|избранное|войти|регистрация)$/i;
+    if (!raw || raw.split(/\s+/).length <= 2 || STOP.test(raw)) return '';
+    return raw.slice(0, 120);
   }
   function descriptionRoot() {
     return document.querySelector('[data-marker="item-view/item-description"], #bx_item-description, [itemprop="description"]');
@@ -637,7 +651,7 @@
       if (observer) observer.disconnect();
       let applied = 0, confirmed = 0, noVerdict = 0, done = 0;
       const jobs = fresh.map((c, i) => {
-        const msgs = buildLLMMessages(c.token, c.sentence, c.sentOffset, title, LLM.reasoning);
+        const msgs = buildLLMMessages(c.token, c.sentence, c.sentOffset, title, LLM.reasoning, c.chunkText);
         if (LLM.verbose) {
           ui.log('→ LLM [' + c.token + '] context: ' + msgs[1].content.replace(/\n/g, ' | '));
         }
