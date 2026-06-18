@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Dehomoglyph + LLM (SPA, мост к расширению)
 // @namespace    dehomoglyph
-// @version      5.1.6
+// @version      5.1.5
 // @description  Исправляет подмену латиница<->кириллица на Avito. Фаза 1 — быстрая эвристика; фаза 2 — доуточнение неоднозначных токенов локальной LLM через безопасный мост к расширению.
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -335,10 +335,6 @@
   /* ===================== DOM ===================== */
   const SKIP = new Set(['SCRIPT','STYLE','NOSCRIPT','TEXTAREA','INPUT','CODE','PRE','SELECT','OPTION']);
 
-  // ≥2 заглавных confusable-кириллицы подряд: ТУРЕ, АВС, СОМ и т.п.
-  // Буквы: А В Е К М Н О Р С Т Х У І Ј Ѕ (те что в CYR_TO_LAT, верхний регистр)
-  const CONFUSABLE_CYR2 = /[АВЕКМНОРСТХУІЈЅ]{2}/;
-
   function makeWalker(root) {
     return document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(n) {
@@ -348,12 +344,11 @@
         if (p.isContentEditable) return NodeFilter.FILTER_REJECT;
         const v = n.nodeValue;
         if (!v || v.length < 2) return NodeFilter.FILTER_REJECT;
-        const hasLat = /[A-Za-z]/.test(v);
-        const hasCyr = /[Ѐ-ӿ]/.test(v);
-        if (!hasLat || !hasCyr) {
-          if (INVISIBLE_T.test(v)) return NodeFilter.FILTER_ACCEPT;
-          if (!hasLat && hasCyr && CONFUSABLE_CYR2.test(v)) return NodeFilter.FILTER_ACCEPT;
-          return NodeFilter.FILTER_REJECT;
+        // нужен хотя бы один confusable-кандидат: и латиница, и кириллица где-то рядом
+        if (!/[A-Za-z]/.test(v) || !/[\u0400-\u04FF]/.test(v)) {
+          // одиночные узлы только из одного скрипта пропускаем (смешения внутри слова не будет)
+          // исключение: невидимые символы
+          if (!INVISIBLE_T.test(v)) return NodeFilter.FILTER_REJECT;
         }
         return NodeFilter.FILTER_ACCEPT;
       }
