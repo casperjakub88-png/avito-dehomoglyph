@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Dehomoglyph + LLM (SPA, мост к расширению)
 // @namespace    dehomoglyph
-// @version      5.1.1
+// @version      5.1.2
 // @description  Исправляет подмену латиница<->кириллица на Avito. Фаза 1 — быстрая эвристика; фаза 2 — доуточнение неоднозначных токенов локальной LLM через безопасный мост к расширению.
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -282,7 +282,8 @@
         const pos = out.length;          // позиция этого токена в собираемом тексте
         out += u.text;
         if (collector && u.script === 'ambig' && u.resolved === null) {
-          collector.push({ node, token: u.text, pos, sentence: contextAt(text, pos, u.text) });
+          const ctx = contextAt(text, pos, u.text);
+          collector.push({ node, token: u.text, pos, sentence: ctx.sentence, sentOffset: ctx.offset });
         }
       }
     }
@@ -303,13 +304,25 @@
     let s = p, e = p + token.length;
     while (s > 0 && !/[.!?;\n]/.test(text[s - 1])) s--;
     while (e < text.length && !/[.!?;\n]/.test(text[e])) e++;
-    let sent = text.slice(s, e).trim();
-    // если предложение слишком длинное — сузим до окна ±60 символов вокруг токена
-    if (sent.length > 220) {
-      const a = Math.max(0, p - 60), b = Math.min(text.length, p + token.length + 60);
-      sent = '…' + text.slice(a, b).trim() + '…';
+    let sliceStart = s, sliceEnd = e;
+    // если предложение слишком длинное — сузим до окна ±60 симв. вокруг токена
+    let prefix = '', suffix = '';
+    if (e - s > 220) {
+      sliceStart = Math.max(0, p - 60);
+      sliceEnd   = Math.min(text.length, p + token.length + 60);
+      if (sliceStart > 0) prefix = '…';
+      if (sliceEnd < text.length) suffix = '…';
     }
-    return sent.slice(0, 240);
+    let raw = text.slice(sliceStart, sliceEnd);
+    // абсолютный offset токена внутри raw до trim
+    let offset = p - sliceStart;
+    // обрезаем пробелы СЛЕВА и корректируем offset; справа — просто trimEnd
+    const lead = raw.length - raw.replace(/^\s+/, '').length;
+    raw = raw.slice(lead).replace(/\s+$/, '');
+    offset -= lead;
+    const sent = prefix + raw + suffix;
+    offset += prefix.length;
+    return { sentence: sent.slice(0, 240), offset: Math.max(0, Math.min(offset, sent.length - token.length)) };
   }
 
   /* ===================== DOM ===================== */
@@ -465,15 +478,24 @@
     'цифровой памяти? Тогда → ЛАТИНИЦА. Примеры: iPhone 5C, 5S → латиница; type C, USB, HDMI → латиница; ' +
     '5T у жёсткого диска = терабайты → латиница; Yahoo = бренд; ABC = латинское слово.\n' +
     'Русские слова и предлоги (с, в, о) — кириллица.';
-  function buildLLMMessages(token, context, title, reasoning) {
+  function buildLLMMessages(token, context, offset, title, reasoning) {
     const tail = reasoning
       ? 'Кратко (1 предложение) объясни смысл, затем последней строкой строго: ВЕРДИКТ: кириллица ИЛИ ВЕРДИКТ: латиница'
       : 'Ответь одним словом: кириллица или латиница';
-    // Помечаем конкретный токен маркером ⟦…⟧ прямо в контексте — LLM видит точную позицию.
-    const markedCtx = context.replace(token, '⟦' + token + '⟧');
+    // Маркер <<<…>>> ставится по ТОЧНОЙ позиции — в строке может быть несколько
+    // одинаковых букв, нужна именно та, по которой собран токен.
+    let markedCtx;
+    if (typeof offset === 'number' && offset >= 0 && context.substr(offset, token.length) === token) {
+      markedCtx = context.slice(0, offset) + '<<<' + token + '>>>' + context.slice(offset + token.length);
+    } else {
+      markedCtx = context.replace(token, '<<<' + token + '>>>');   // fallback
+    }
     const user =
       (title ? 'Объявление: "' + title + '"\n' : '') +
-      'Фраза: "' + markedCtx + '"\nСлово: "' + token + '"';
+      'Фраза: "' + markedCtx + '"\n' +
+      'Внимание: оцени ИМЕННО ту букву "' + token + '", которая заключена в маркеры <<< >>> ' +
+      '(в этой фразе может быть несколько таких букв — другие НЕ учитывай). ' +
+      'Какой алфавит у этой конкретной буквы — кириллица или латиница?';
     return [
       { role: 'system', content: LLM_SYSTEM + '\n' + tail },
       { role: 'user', content: user },
@@ -603,7 +625,7 @@
       if (observer) observer.disconnect();
       let applied = 0, confirmed = 0, done = 0;
       const jobs = fresh.map((c, i) => {
-        const msgs = buildLLMMessages(c.token, c.sentence, title, LLM.reasoning);
+        const msgs = buildLLMMessages(c.token, c.sentence, c.sentOffset, title, LLM.reasoning);
         if (LLM.verbose) {
           ui.log('→ LLM [' + c.token + '] context: ' + msgs[1].content.replace(/\n/g, ' | '));
         }
@@ -720,7 +742,7 @@
         ui.setStatus('LLM: спрашиваю «' + token + '»…');
         ui.log('── ручной запрос: «' + token + '» ──');
         try {
-          const msgs = buildLLMMessages(token, ctx, title, true);
+          const msgs = buildLLMMessages(token, ctx, ctx.indexOf(token), title, true);
           const jobId = randId();
           const resp = await llmChat(jobId, msgs, { reasoning: true, max_tokens: 400 });
           if (!resp || !resp.ok) { ui.log('ошибка: ' + (resp && resp.error)); ui.setStatus('LLM: ошибка'); return; }
