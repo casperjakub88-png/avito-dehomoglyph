@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Dehomoglyph + LLM (SPA, мост к расширению)
 // @namespace    dehomoglyph
-// @version      5.1.5
+// @version      5.1.6
 // @description  Исправляет подмену латиница<->кириллица на Avito. Фаза 1 — быстрая эвристика; фаза 2 — доуточнение неоднозначных токенов локальной LLM через безопасный мост к расширению.
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -25,9 +25,9 @@
   /* ===================== 2c: ЯКОРЯ И СЛОВАРИ ===================== */
   // Кириллические буквы БЕЗ латинского двойника — «якоря»: если в слове есть
   // такая буква, слово точно кириллическое, и гомоглифы в нём -> кириллица (ЭРА).
-  const CYR_ANCHORS = new Set('бгджзилнптфцчшщъыьэюяБГДЖЗИЙЛНПТФЦЧШЩЪЫЬЭЮЯ');
+  const CYR_ANCHORS = new Set('бгджзилнптфцчшщъыьэюяБГДЖЗИЙЛПФЦЧШЩЪЫЬЭЮЯ');
   // Латинские буквы без кириллического двойника — латинские якоря (USB, HDMI…).
-  const LAT_ANCHORS = new Set('dfghlmnqrstuvwzDFGHLMNQRSTUVWZ');
+  const LAT_ANCHORS = new Set('dfghlmnqrtuvwzDFGLNQRUVWZ');
   // Известные латинские термины (в нижнем регистре, после нормализации в латиницу):
   // бренды/стандарты/порты -> латиница, даже если односложно/неоднозначно.
   const KNOWN_LATIN = new Set([
@@ -344,10 +344,8 @@
         if (p.isContentEditable) return NodeFilter.FILTER_REJECT;
         const v = n.nodeValue;
         if (!v || v.length < 2) return NodeFilter.FILTER_REJECT;
-        // нужен хотя бы один confusable-кандидат: и латиница, и кириллица где-то рядом
-        if (!/[A-Za-z]/.test(v) || !/[\u0400-\u04FF]/.test(v)) {
-          // одиночные узлы только из одного скрипта пропускаем (смешения внутри слова не будет)
-          // исключение: невидимые символы
+        // принимаем узлы с любыми буквами: нужны и чисто-кириллические (ТУРЕ, Мах)
+        if (!/[A-Za-z\u0400-\u04FF]/.test(v)) {
           if (!INVISIBLE_T.test(v)) return NodeFilter.FILTER_REJECT;
         }
         return NodeFilter.FILTER_ACCEPT;
