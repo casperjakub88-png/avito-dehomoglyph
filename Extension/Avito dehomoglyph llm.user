@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Dehomoglyph + LLM (SPA, мост к расширению)
 // @namespace    dehomoglyph
-// @version      5.2.0
+// @version      5.2.1
 // @description  Исправляет подмену латиница<->кириллица на Avito. Фаза 1 — быстрая эвристика; фаза 2 — доуточнение неоднозначных токенов локальной LLM через безопасный мост к расширению.
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -62,7 +62,7 @@
   // Настройки и кэш вердиктов переживают перезагрузку и общие для всех вкладок.
   const LS_CFG = 'avito_dh_cfg', LS_CACHE = 'avito_dh_cache', LS_CACHE_VER = 'avito_dh_cache_ver';
   // Версия кэша: меняем при правках эвристики/якорей/промпта — старые вердикты инвалидируются.
-  const CACHE_VERSION = '5.1.7';
+  const CACHE_VERSION = '5.2.1';
   function loadPersisted() {
     try {
       const c = JSON.parse(localStorage.getItem(LS_CFG) || '{}');
@@ -267,6 +267,17 @@
           const pv = prevWordUnit(units, i), nx = nextWordUnit(units, i);
           if ((pv && pv.resolved === 'lat') || (nx && nx.resolved === 'lat')) { u.resolved = null; continue; }
         }
+        // 2c: одиночная 'х'/'Х' (кир) в контексте умножения/размера — НЕ предлог.
+        // «3х4», «4Х4», «3 х USB», «stock х USB» → знак ×, должно быть лат. x → в LLM.
+        // Триггеры: цифра в том же чанке, или цифра в соседнем fixed-куске, или латинский сосед.
+        if (/^[хХ]$/.test(u.text)) {
+          const pv = prevWordUnit(units, i), nx = nextWordUnit(units, i);
+          const prevFixed = i > 0 && !units[i - 1].word ? units[i - 1].fixed : '';
+          const nextFixed = i < units.length - 1 && !units[i + 1].word ? units[i + 1].fixed : '';
+          const digitNear = /\d/.test(u.chunkText || '') || /\d\s*$/.test(prevFixed) || /^\s*\d/.test(nextFixed);
+          const latNeighbor = (pv && pv.resolved === 'lat') || (nx && nx.resolved === 'lat');
+          if (digitNear || latNeighbor) { u.resolved = null; continue; }   // → LLM
+        }
         const sc = letterScript(u.text);
         if (u.hasDigit) {
           // 2c: модельный код вида "Р-0010" / "P-0010" (буква — дефис — цифры).
@@ -274,6 +285,9 @@
           // в техконтексте обычно лат. P, а «5В/2.1А» — кириллица. Отличие —
           // буква стоит ПЕРЕД дефисом+цифрами, а не после цифр. Гоним в LLM.
           if (/^[A-Za-zЀ-ӿ]-\d/.test(u.chunkText || '')) { u.resolved = null; continue; }
+          // 'х'/'Х' с цифрой в чанке (4Х4, 3х4) — это знак умножения/размер, НЕ единица.
+          // Отдаём в LLM, чтобы он подтвердил латинский x (а не оставлял кириллицу).
+          if (/^[хХ]$/.test(u.text)) { u.resolved = null; continue; }
           if (sc === 'lat' && UNIT_LATIN.has(u.text) && docLang === 'cyr') u.resolved = 'cyr'; // 5B->5В, 500p->500р
           else if (sc === 'lat') u.resolved = 'lat';                 // 5S/5C — модель
           else u.resolved = 'cyr';                                   // 5В/2.1А — уже кириллица, уверенно cyr (НЕ в LLM)
@@ -491,7 +505,9 @@
     'цифровой памяти? Тогда → ЛАТИНИЦА. Примеры: iPhone 5C, 5S → латиница; type C, USB, HDMI → латиница; ' +
     '5T у жёсткого диска = терабайты → латиница; Yahoo = бренд; ABC = латинское слово. ' +
     'Одиночная буква после списка разъёмов (4xUSBA+C, 2xUSB+C, USBA+C) ' +
-    'обозначает тип порта Type-C → ЛАТИНИЦА, это НЕ физическая единица.\n' +
+    'обозначает тип порта Type-C → ЛАТИНИЦА, это НЕ физическая единица. ' +
+    'Одиночная буква х/Х между цифрами или рядом с латинским словом (3х4, 4Х4, 3 х USB, stock х USB) ' +
+    'обозначает знак умножения/размера × → ЛАТИНИЦА (x).\n' +
     'Русские слова и предлоги (с, в, о) — кириллица.\n' +
     'ШАГ 3. ТАЙМ-БРЕЙКЕР (только если шаги 1–2 не дали однозначного ответа): ' +
     'если выделенная буква стоит в модельном коде или серийном номере (буквы+цифры, ' +
