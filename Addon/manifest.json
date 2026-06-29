@@ -24,7 +24,10 @@
     "https://*.xethub.hf.co/*",
     "https://cdn-lfs.huggingface.co/*",
     "https://cdn-lfs-us-1.huggingface.co/*",
-    "http://localhost/*"
+    "http://localhost/*",
+    "*://www.bybit.com/*",
+    "http://192.168.88.3/*",
+    "http://192.168.88.3:11434/"
   ],
 
   "background": {
@@ -34,7 +37,7 @@
 
   "content_scripts": [
     {
-      "matches": ["*://www.avito.ru/*", "*://*.avito.ru/*"],
+      "matches": ["*://www.avito.ru/*", "*://*.avito.ru/*", "*://www.bybit.com/*"],
       "js": ["bridge.js"],
       "run_at": "document_start"
     }
@@ -45,5 +48,5 @@
     "default_popup": "popup.html"
   },
 
-  "content_security_policy": "script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://esm.sh; object-src 'self'; connect-src 'self' https://cdn.jsdelivr.net https://esm.sh https://raw.githubusercontent.com https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://*.hf.co https://cas-bridge.xethub.hf.co https://*.xethub.hf.co http://localhost:11434"
+  "content_security_policy": "script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://esm.sh; object-src 'self'; connect-src 'self' https://cdn.jsdelivr.net https://esm.sh https://raw.githubusercontent.com https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://*.hf.co https://cas-bridge.xethub.hf.co https://*.xethub.hf.co http://localhost:11434 http://192.168.88.3:11434"
 }
