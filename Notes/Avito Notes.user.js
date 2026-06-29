@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.0.0
+// @version      1.1.0
 // @description  Заметки и дизлайк к объявлениям Avito — видны на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -49,40 +49,44 @@
   // ── Стили ──────────────────────────────────────────────────────────────────
   const STYLE = `
 .an-badge {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: 11px; line-height: 1.2; border-radius: 4px;
-  padding: 2px 6px; margin: 2px 0; max-width: 100%;
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; line-height: 1.3; border-radius: 4px;
+  padding: 1px 5px; max-width: 100%;
   box-sizing: border-box; word-break: break-word;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.an-badge-dislike {
-  background: #fde8e8; color: #b91c1c; border: 1px solid #f9a8a8;
+.an-badge-dislike { background: #fde8e8; color: #b91c1c; }
+.an-badge-note { background: #fef9e7; color: #7c6000; }
+.an-card-wrap {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 3px 0 0; margin-top: 2px;
 }
-.an-badge-note {
-  background: #fef9e7; color: #7c6000; border: 1px solid #ffe082;
-}
-.an-widget {
-  display: flex; flex-direction: column; gap: 4px;
-  padding: 6px 0; border-top: 1px solid #eee; margin-top: 4px;
+
+/* ── item page: строка рядом с «Добавить в избранное» ── */
+.an-item-bar {
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap; margin: 6px 0;
 }
 .an-dislike-btn {
   display: inline-flex; align-items: center; gap: 4px;
-  font-size: 12px; cursor: pointer; border: 1px solid #d1d5db;
-  background: #fff; border-radius: 6px; padding: 3px 10px;
-  transition: background .15s, color .15s;
-  user-select: none;
+  font-size: 13px; cursor: pointer;
+  border: 1px solid #d1d5db; background: #fff;
+  border-radius: 8px; padding: 5px 12px;
+  transition: background .15s, color .15s, border-color .15s;
+  user-select: none; white-space: nowrap;
 }
 .an-dislike-btn.on { background: #b91c1c; color: #fff; border-color: #b91c1c; }
-.an-dislike-btn:hover:not(.on) { background: #fee2e2; }
-.an-note-wrap { display: flex; gap: 4px; align-items: flex-start; }
+.an-dislike-btn:hover:not(.on) { background: #fee2e2; border-color: #fca5a5; }
+.an-note-wrap { display: flex; gap: 6px; align-items: center; flex: 1; min-width: 180px; }
 .an-note-input {
-  flex: 1; font-size: 12px; border: 1px solid #d1d5db; border-radius: 6px;
-  padding: 4px 6px; resize: vertical; min-height: 36px; box-sizing: border-box;
-  font-family: inherit;
+  flex: 1; font-size: 13px; border: 1px solid #d1d5db; border-radius: 8px;
+  padding: 5px 8px; box-sizing: border-box; font-family: inherit;
+  min-width: 120px;
 }
 .an-note-input:focus { outline: none; border-color: #6366f1; }
 .an-save-btn {
-  font-size: 12px; border: 1px solid #6366f1; color: #6366f1;
-  background: #fff; border-radius: 6px; padding: 4px 8px; cursor: pointer;
+  font-size: 13px; border: 1px solid #6366f1; color: #6366f1;
+  background: #fff; border-radius: 8px; padding: 5px 10px; cursor: pointer;
   white-space: nowrap; transition: background .15s, color .15s;
 }
 .an-save-btn:hover { background: #6366f1; color: #fff; }
@@ -93,139 +97,138 @@
     const s = document.createElement("style");
     s.id = "an-styles";
     s.textContent = STYLE;
-    document.head.appendChild(s);
+    (document.head || document.documentElement).appendChild(s);
   }
 
   // ── Виджет на странице объявления ─────────────────────────────────────────
-  function buildItemWidget(id) {
+  // Вставляется в ту же строку, что «Добавить в избранное» (data-marker="item-view/favorite-button")
+  function buildItemBar(id) {
     const entry = getEntry(id);
-    const wrap = document.createElement("div");
-    wrap.className = "an-widget";
-    wrap.setAttribute("data-an-id", id);
+    const bar = document.createElement("div");
+    bar.className = "an-item-bar";
+    bar.setAttribute("data-an-id", id);
 
     const dislikeBtn = document.createElement("button");
     dislikeBtn.className = "an-dislike-btn" + (entry.dislike ? " on" : "");
-    dislikeBtn.innerHTML = entry.dislike ? "👎 Дизлайк снят" : "👎 Дизлайк";
+    dislikeBtn.textContent = entry.dislike ? "👎 Снять" : "👎 Дизлайк";
     dislikeBtn.title = "Пометить объявление дизлайком";
-
     dislikeBtn.onclick = () => {
-      const e = getEntry(id);
-      const next = !e.dislike;
+      const next = !getEntry(id).dislike;
       setEntry(id, { dislike: next });
       dislikeBtn.className = "an-dislike-btn" + (next ? " on" : "");
-      dislikeBtn.innerHTML = next ? "👎 Дизлайк снят" : "👎 Дизлайк";
+      dislikeBtn.textContent = next ? "👎 Снять" : "👎 Дизлайк";
     };
 
     const noteWrap = document.createElement("div");
     noteWrap.className = "an-note-wrap";
 
-    const textarea = document.createElement("textarea");
-    textarea.className = "an-note-input";
-    textarea.placeholder = "Заметка к объявлению…";
-    textarea.rows = 2;
-    textarea.value = entry.note || "";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "an-note-input";
+    input.placeholder = "Заметка…";
+    input.value = entry.note || "";
+    input.onclick = (e) => e.stopPropagation();
 
     const saveBtn = document.createElement("button");
     saveBtn.className = "an-save-btn";
-    saveBtn.textContent = "Сохранить";
-    saveBtn.onclick = () => {
-      setEntry(id, { note: textarea.value.trim() });
+    saveBtn.textContent = "Сохр.";
+    saveBtn.onclick = (e) => {
+      e.stopPropagation();
+      setEntry(id, { note: input.value.trim() });
       saveBtn.textContent = "✓";
-      setTimeout(() => { saveBtn.textContent = "Сохранить"; }, 1200);
+      setTimeout(() => { saveBtn.textContent = "Сохр."; }, 1200);
     };
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") saveBtn.click(); });
 
-    noteWrap.appendChild(textarea);
+    noteWrap.appendChild(input);
     noteWrap.appendChild(saveBtn);
-    wrap.appendChild(dislikeBtn);
-    wrap.appendChild(noteWrap);
-    return wrap;
+    bar.appendChild(dislikeBtn);
+    bar.appendChild(noteWrap);
+    return bar;
   }
 
-  // Найти якорь для вставки виджета на странице объявления
   function injectItemWidget(id) {
     if (document.querySelector("[data-an-id='" + id + "']")) return;
-    // типичные контейнеры цены/кнопок на авито
-    const anchors = [
-      "[data-marker='item-view/item-actions']",
-      "[data-marker='item-view/price']",
-      ".item-actions",
-      ".js-item-actions",
-      "div[class*='item-actions']",
-      "div[class*='price-block']",
-    ];
-    let anchor = null;
-    for (const sel of anchors) {
-      anchor = document.querySelector(sel);
-      if (anchor) break;
+
+    // Находим контейнер кнопки «Добавить в избранное»
+    // На скриншоте: button[data-marker="item-view/favorite-button"] внутри нескольких div
+    // Поднимаемся до flex-контейнера строки (._2a702415f0569409 или родитель кнопки 3-4 уровня)
+    const favBtn = document.querySelector(
+      "[data-marker='item-view/favorite-button']," +
+      "[data-marker='favorite-button']," +
+      "button[class*='favorite']," +
+      "[class*='favorite-button']"
+    );
+    if (!favBtn) return;
+
+    // Ищем ближайший flex-контейнер строки (родитель 1-4 уровня)
+    let row = favBtn.parentElement;
+    for (let i = 0; i < 4 && row; i++) {
+      const cs = getComputedStyle(row);
+      if (cs.display === "flex" || cs.display === "inline-flex") break;
+      row = row.parentElement;
     }
-    if (!anchor) return;
-    const widget = buildItemWidget(id);
-    anchor.parentNode.insertBefore(widget, anchor.nextSibling);
+    if (!row) row = favBtn.parentElement;
+
+    const bar = buildItemBar(id);
+    // Вставить после строки с избранным
+    row.parentNode.insertBefore(bar, row.nextSibling);
   }
 
   // ── Бейджи в карточках поиска ─────────────────────────────────────────────
-  function badgesFor(id) {
-    const entry = getEntry(id);
-    const frags = [];
-    if (entry.dislike) {
-      const b = document.createElement("div");
-      b.className = "an-badge an-badge-dislike";
-      b.textContent = "👎 дизлайк";
-      frags.push(b);
-    }
-    if (entry.note) {
-      const b = document.createElement("div");
-      b.className = "an-badge an-badge-note";
-      b.textContent = "📝 " + entry.note;
-      b.title = entry.note;
-      frags.push(b);
-    }
-    return frags;
-  }
-
-  // Найти контейнер для бейджей в карточке поиска
-  function notesContainerFor(card) {
-    // ищем блок с ценой или заголовком
-    const anchors = [
-      "[data-marker='item-title']",
-      "h3",
-      "[class*='title']",
-      "[class*='price']",
-    ];
-    for (const sel of anchors) {
-      const el = card.querySelector(sel);
-      if (el) return el.parentElement || card;
-    }
-    return card;
-  }
-
   function injectCardBadges(card) {
     const id = idFromCard(card);
     if (!id) return;
-    // удалить старые
-    card.querySelectorAll(".an-badge").forEach((b) => b.remove());
-    const badges = badgesFor(id);
-    if (!badges.length) return;
+
+    // Удалить старые бейджи этой карточки
+    const old = card.querySelector(".an-card-wrap");
+    if (old) old.remove();
+
+    const entry = getEntry(id);
+    if (!entry.dislike && !entry.note) return;
+
     const wrap = document.createElement("div");
-    wrap.style.cssText = "display:flex;flex-direction:column;gap:2px;margin:2px 0;";
-    badges.forEach((b) => wrap.appendChild(b));
-    const container = notesContainerFor(card);
-    container.appendChild(wrap);
+    wrap.className = "an-card-wrap";
+
+    if (entry.dislike) {
+      const b = document.createElement("span");
+      b.className = "an-badge an-badge-dislike";
+      b.textContent = "👎 дизлайк";
+      wrap.appendChild(b);
+    }
+    if (entry.note) {
+      const b = document.createElement("span");
+      b.className = "an-badge an-badge-note";
+      b.textContent = "📝 " + entry.note;
+      b.title = entry.note;
+      wrap.appendChild(b);
+    }
+
+    // Целевой контейнер: iva-item-bottomBlock (нижний левый блок карточки)
+    // На скриншоте: div[class*="iva-item-bottomBlock"]
+    const bottom =
+      card.querySelector("[class*='iva-item-bottomBlock']") ||
+      card.querySelector("[data-marker='item-line']") ||
+      card.querySelector("[class*='bottomBlock']") ||
+      card.querySelector("[class*='dateInfoStep']");
+
+    if (bottom) {
+      bottom.appendChild(wrap);
+    } else {
+      // fallback: в конец body карточки
+      const body = card.querySelector("[class*='iva-item-body']") || card;
+      body.appendChild(wrap);
+    }
   }
 
-  // Все карточки поиска
-  const CARD_SELECTORS = [
-    "[data-marker='item']",
-    "[data-marker='catalog-serp/item']",
-    "article[class*='item']",
-    "div[class*='iva-item']",
-  ];
-
+  // Все карточки поиска (item-level контейнеры)
   function allCards() {
-    for (const sel of CARD_SELECTORS) {
-      const els = document.querySelectorAll(sel);
-      if (els.length) return [...els];
-    }
+    // data-marker="item" — самый надёжный
+    let els = document.querySelectorAll("[data-marker='item']");
+    if (els.length) return [...els];
+    // fallback: iva-item-content-*
+    els = document.querySelectorAll("[class*='iva-item-content']");
+    if (els.length) return [...els];
     return [];
   }
 
@@ -233,9 +236,9 @@
     allCards().forEach(injectCardBadges);
   }
 
-  // ── Определить тип страницы и действовать ─────────────────────────────────
+  // ── Тип страницы ──────────────────────────────────────────────────────────
   function isItemPage() {
-    return /avito\.ru\/.*_\d+([?#]|$)/.test(location.href);
+    return /avito\.ru\/[^/]+_\d+([?#]|$)/.test(location.href);
   }
 
   let lastHref = "";
@@ -246,26 +249,27 @@
     injectStyles();
     if (isItemPage()) {
       const id = idFromUrl();
-      if (id) {
-        // DOM может быть ещё не готов — повторяем с задержками
-        const tryInject = (attempts) => {
-          injectItemWidget(id);
-          if (attempts > 0 && !document.querySelector("[data-an-id='" + id + "']")) {
-            setTimeout(() => tryInject(attempts - 1), 500);
-          }
-        };
-        tryInject(8);
-      }
+      if (!id) return;
+      let attempts = 12;
+      const tryInject = () => {
+        injectItemWidget(id);
+        if (attempts-- > 0 && !document.querySelector("[data-an-id='" + id + "']"))
+          setTimeout(tryInject, 400);
+      };
+      tryInject();
     } else {
-      setTimeout(refreshCards, 400);
+      setTimeout(refreshCards, 300);
     }
   }
 
-  // ── MutationObserver для SPA-навигации ────────────────────────────────────
+  // ── MutationObserver — карточки появляются динамически ───────────────────
   let moTimer = null;
   const observer = new MutationObserver(() => {
     clearTimeout(moTimer);
-    moTimer = setTimeout(onNavigate, 200);
+    moTimer = setTimeout(() => {
+      onNavigate();
+      if (!isItemPage()) refreshCards();
+    }, 250);
   });
 
   function start() {
@@ -280,15 +284,14 @@
     start();
   }
 
-  // перехватить pushState/replaceState для SPA
   ["pushState", "replaceState"].forEach((fn) => {
     const orig = history[fn];
     history[fn] = function (...args) {
       const r = orig.apply(this, args);
-      setTimeout(onNavigate, 50);
+      setTimeout(onNavigate, 80);
       return r;
     };
   });
 
-  window.addEventListener("popstate", () => setTimeout(onNavigate, 50));
+  window.addEventListener("popstate", () => setTimeout(onNavigate, 80));
 })();
