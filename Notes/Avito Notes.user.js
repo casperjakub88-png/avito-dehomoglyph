@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.4.0
-// @description  Заметки и дизлайк к объявлениям Avito — видны на карточке и в поиске
+// @version      1.5.0
+// @description  Заметки и дизлайк к объявлениям Avito — видны и редактируются на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
 // @grant        none
@@ -18,15 +18,12 @@
   function loadAll() {
     try { return JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch { return {}; }
   }
-
   function saveAll(data) {
     try { localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {}
   }
-
   function getEntry(id) {
     return loadAll()[id] || { note: "", dislike: false };
   }
-
   function setEntry(id, patch) {
     const data = loadAll();
     data[id] = Object.assign(getEntry(id), patch);
@@ -39,8 +36,9 @@
     const m = (url || location.href).match(/_(\d+)(?:[/?#]|$)/);
     return m ? m[1] : null;
   }
-
   function idFromCard(el) {
+    if (el.dataset && el.dataset.itemId) return el.dataset.itemId;
+    if (el.id && /^i?\d+$/.test(el.id)) return el.id.replace(/^i/, "");
     const a = el.querySelector("a[href*='_']");
     if (!a) return null;
     return idFromUrl(a.href);
@@ -48,26 +46,17 @@
 
   // ── Стили ──────────────────────────────────────────────────────────────────
   const STYLE = `
-.an-badge {
-  display: inline-flex; align-items: center; gap: 3px;
-  font-size: 11px; line-height: 1.3; border-radius: 4px;
-  padding: 1px 5px; max-width: 100%; box-sizing: border-box;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.an-badge-dislike { background: #fde8e8; color: #b91c1c; }
-.an-badge-note    { background: #fef9e7; color: #7c6000; }
-.an-card-wrap { display: flex; flex-direction: column; gap: 2px; padding: 3px 0 0; }
-
+/* ── панель на странице объявления ── */
 .an-item-bar {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin: 8px 0; padding: 6px 0; border-top: 1px solid #e5e7eb;
+  margin: 2px 0 6px; padding: 0;
 }
 .an-dislike-btn {
   display: inline-flex; align-items: center; gap: 4px;
   font-size: 13px; cursor: pointer; border: 1px solid #d1d5db;
   background: #fff; border-radius: 8px; padding: 5px 12px;
   transition: background .15s, color .15s, border-color .15s;
-  user-select: none; white-space: nowrap; font-family: inherit;
+  user-select: none; white-space: nowrap; font-family: inherit; line-height: 1.2;
 }
 .an-dislike-btn.on { background: #b91c1c; color: #fff; border-color: #b91c1c; }
 .an-dislike-btn:hover:not(.on) { background: #fee2e2; border-color: #fca5a5; }
@@ -83,6 +72,34 @@
   white-space: nowrap; transition: background .15s, color .15s; font-family: inherit;
 }
 .an-save-btn:hover { background: #6366f1; color: #fff; }
+
+/* ── мини-виджет в карточке поиска ── */
+.an-card-wrap {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 0 0; margin-top: 2px; width: 100%;
+}
+.an-card-dislike {
+  flex: 0 0 auto; cursor: pointer; user-select: none;
+  font-size: 18px; line-height: 1; border: 1px solid #d1d5db;
+  background: #fff; border-radius: 8px; padding: 3px 7px;
+  transition: background .15s, border-color .15s, filter .15s;
+  filter: grayscale(1) opacity(.65);
+}
+.an-card-dislike:hover { background: #fee2e2; border-color: #fca5a5; filter: none; }
+.an-card-dislike.on { background: #b91c1c; border-color: #b91c1c; filter: none; }
+.an-card-note {
+  flex: 1 1 auto; min-width: 60px;
+  font-size: 13px; border: 1px solid #d1d5db; border-radius: 8px;
+  padding: 4px 8px; box-sizing: border-box; font-family: inherit;
+  background: #fffdf5;
+}
+.an-card-note:focus { outline: none; border-color: #6366f1; background: #fff; }
+
+/* ── подсветка дизлайкнутого объявления ── */
+.an-disliked {
+  background: #fff1f1 !important;
+  outline: 2px solid #f3b4b4; outline-offset: -2px; border-radius: 10px;
+}
 `;
 
   function injectStyles() {
@@ -101,6 +118,7 @@
     bar.setAttribute("data-an-id", id);
 
     const dislikeBtn = document.createElement("button");
+    dislikeBtn.type = "button";
     dislikeBtn.className = "an-dislike-btn" + (entry.dislike ? " on" : "");
     dislikeBtn.textContent = entry.dislike ? "👎 Снять дизлайк" : "👎 Дизлайк";
     dislikeBtn.onclick = () => {
@@ -121,6 +139,7 @@
     input.onclick = (e) => e.stopPropagation();
 
     const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
     saveBtn.className = "an-save-btn";
     saveBtn.textContent = "Сохранить";
     saveBtn.onclick = (e) => {
@@ -138,75 +157,101 @@
     return bar;
   }
 
-  // Найти якорь для вставки на странице объявления.
-  // Пробуем несколько стабильных точек, от предпочтительных к fallback.
-  function findItemAnchor() {
-    const candidates = [
-      // блок с заголовком (стабильный класс, виден на скриншоте)
-      ".js-item-view-title-info",
-      // маркер заголовка
-      "[data-marker='item-view/title-info']",
-      // блок цены/действий
-      "[data-marker='item-view/item-price']",
-      "[data-marker='item-view/price']",
-      "[data-marker='item-view/item-actions']",
-      // кнопка избранного — поднимаемся до контейнера
-      "[data-marker='item-view/favorite-button']",
-      "[data-marker='favorite-button']",
-    ];
-    for (const sel of candidates) {
-      const el = document.querySelector(sel);
-      if (el) return el;
-    }
-    return null;
-  }
-
+  // Якорь: вставляем виджет ВНУТРЬ блока заголовка, сразу после h1 — ближе к заголовку.
   function injectItemWidget(id) {
     if (document.querySelector("[data-an-id='" + id + "']")) return false;
-    const anchor = findItemAnchor();
-    if (!anchor) return false;
+    const titleBox =
+      document.querySelector(".js-item-view-title-info") ||
+      document.querySelector("[data-marker='item-view/title-info']");
     const bar = buildItemBar(id);
-    anchor.parentNode.insertBefore(bar, anchor.nextSibling);
-    return true;
+    if (titleBox) {
+      // вставить как первый элемент после заголовка внутри блока
+      titleBox.appendChild(bar);
+      return true;
+    }
+    // fallback на блок цены/действий
+    const alt = document.querySelector(
+      "[data-marker='item-view/item-price'],[data-marker='item-view/price'],[data-marker='item-view/item-actions']"
+    );
+    if (alt) { alt.parentNode.insertBefore(bar, alt.nextSibling); return true; }
+    return false;
   }
 
-  // ── Бейджи в карточках поиска ─────────────────────────────────────────────
-  function injectCardBadges(card) {
-    const id = idFromCard(card);
-    if (!id) return;
+  // ── Мини-виджет в карточке поиска (интерактивный) ──────────────────────────
+  function stopCard(e) { e.stopPropagation(); }
+  // на ссылках-карточках клик/нажатие не должны вести на объявление
+  function killNav(el) {
+    ["click", "mousedown", "mouseup", "pointerdown", "touchstart"].forEach((ev) =>
+      el.addEventListener(ev, (e) => { e.stopPropagation(); }, true)
+    );
+  }
 
-    // убрать старые
-    const old = card.querySelector(".an-card-wrap");
-    if (old) old.remove();
-
-    const entry = getEntry(id);
-    if (!entry.dislike && !entry.note) return;
-
+  function buildCardWidget(id) {
     const wrap = document.createElement("div");
     wrap.className = "an-card-wrap";
+    wrap.setAttribute("data-an-card", id);
+    killNav(wrap);
 
-    if (entry.dislike) {
-      const b = document.createElement("span");
-      b.className = "an-badge an-badge-dislike";
-      b.textContent = "👎 дизлайк";
-      wrap.appendChild(b);
+    const dislikeBtn = document.createElement("div");
+    dislikeBtn.className = "an-card-dislike";
+    dislikeBtn.textContent = "👎";
+    dislikeBtn.title = "Дизлайк / снять";
+    dislikeBtn.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const next = !getEntry(id).dislike;
+      setEntry(id, { dislike: next });
+      syncCardWidget(wrap, id);
+    });
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "an-card-note";
+    input.placeholder = "Заметка…";
+    input.addEventListener("click", (e) => { e.preventDefault(); stopCard(e); });
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") { input.blur(); }
+    });
+    const save = () => { setEntry(id, { note: input.value.trim() }); syncCardWidget(wrap, id); };
+    input.addEventListener("change", save);
+    input.addEventListener("blur", save);
+
+    wrap._dislike = dislikeBtn;
+    wrap._input = input;
+    wrap.appendChild(dislikeBtn);
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  // Синхронизировать состояние виджета и подсветку карточки со стораджем.
+  // Не трогаем input.value, если поле в фокусе (пользователь печатает).
+  function syncCardWidget(wrap, id) {
+    const entry = getEntry(id);
+    wrap._dislike.classList.toggle("on", !!entry.dislike);
+    if (document.activeElement !== wrap._input) wrap._input.value = entry.note || "";
+    const card = wrap.closest("[data-marker='item'],[class*='iva-item-content']") || wrap.parentElement;
+    if (card) card.classList.toggle("an-disliked", !!entry.dislike);
+  }
+
+  function ensureCardWidget(card) {
+    const id = idFromCard(card);
+    if (!id) return;
+    let wrap = card.querySelector(":scope .an-card-wrap[data-an-card='" + id + "']");
+    if (!wrap) {
+      // убрать чужой/устаревший виджет, если был
+      const stale = card.querySelector(":scope .an-card-wrap");
+      if (stale) stale.remove();
+      wrap = buildCardWidget(id);
+      const bottom =
+        card.querySelector("[class*='iva-item-bottomBlock']") ||
+        card.querySelector("[data-marker='item-line']") ||
+        card.querySelector("[class*='bottomBlock']") ||
+        card.querySelector("[class*='dateInfo']") ||
+        card.querySelector("[class*='iva-item-body']") ||
+        card;
+      bottom.appendChild(wrap);
     }
-    if (entry.note) {
-      const b = document.createElement("span");
-      b.className = "an-badge an-badge-note";
-      b.textContent = "📝 " + entry.note;
-      b.title = entry.note;
-      wrap.appendChild(b);
-    }
-
-    // iva-item-bottomBlock — нижняя левая часть карточки (скриншот 1/2)
-    const bottom =
-      card.querySelector("[class*='iva-item-bottomBlock']") ||
-      card.querySelector("[data-marker='item-line']") ||
-      card.querySelector("[class*='bottomBlock']") ||
-      card.querySelector("[class*='dateInfo']");
-
-    (bottom || card).appendChild(wrap);
+    syncCardWidget(wrap, id);
   }
 
   function allCards() {
@@ -217,13 +262,11 @@
   }
 
   function refreshCards() {
-    allCards().forEach(injectCardBadges);
+    allCards().forEach(ensureCardWidget);
   }
 
   // ── SPA-навигация ─────────────────────────────────────────────────────────
   function isItemPage() {
-    // id объявления — в последнем сегменте пути: .../что-то_1234567[?#]
-    // плюс надёжный признак — наличие блока заголовка объявления в DOM
     if (/_\d+(?:[/?#]|$)/.test(location.pathname) &&
         !/\/(katalog|catalog|items|favorites|profile|user)\b/.test(location.pathname)) {
       return true;
@@ -240,12 +283,9 @@
     if (cur === lastHref) return;
     lastHref = cur;
     injectStyles();
-    // дальнейшую вставку обеспечивает observer (ensure*) — React рендерит асинхронно
     if (!isItemPage()) setTimeout(refreshCards, 300);
   }
 
-  // Гарантировать наличие виджета на странице объявления.
-  // React при ре-рендере удаляет наш узел — поэтому проверяем и вставляем заново.
   function ensureItemWidget() {
     if (!isItemPage()) return;
     const id = idFromUrl();
@@ -254,8 +294,7 @@
     injectItemWidget(id);
   }
 
-  // MutationObserver — реагируем на ре-рендеры React: восстанавливаем виджет,
-  // обновляем бейджи карточек, ловим SPA-навигацию.
+  // MutationObserver — восстановление виджета и подсветки после ре-рендеров React
   let moTimer = null;
   const observer = new MutationObserver(() => {
     clearTimeout(moTimer);
@@ -266,14 +305,13 @@
     }, 150);
   });
 
-  console.log("[Avito Notes] v1.4.0 запущен на", location.href, "| страница объявления:", isItemPage());
+  console.log("[Avito Notes] v1.5.0 запущен на", location.href, "| страница объявления:", isItemPage());
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
   injectStyles();
   onNavigate();
   ensureItemWidget();
 
-  // перехват SPA-навигации
   ["pushState", "replaceState"].forEach((fn) => {
     const orig = history[fn];
     history[fn] = function (...args) {
