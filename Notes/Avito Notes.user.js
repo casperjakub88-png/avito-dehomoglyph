@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.2.0
+// @version      1.3.0
 // @description  Заметки и дизлайк к объявлениям Avito — видны на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -222,7 +222,15 @@
 
   // ── SPA-навигация ─────────────────────────────────────────────────────────
   function isItemPage() {
-    return /avito\.ru\/[^/?#]+_\d+([?#]|$)/.test(location.href);
+    // id объявления — в последнем сегменте пути: .../что-то_1234567[?#]
+    // плюс надёжный признак — наличие блока заголовка объявления в DOM
+    if (/_\d+(?:[/?#]|$)/.test(location.pathname) &&
+        !/\/(katalog|catalog|items|favorites|profile|user)\b/.test(location.pathname)) {
+      return true;
+    }
+    return !!document.querySelector(
+      ".js-item-view-title-info,[data-marker='item-view/title-info']"
+    );
   }
 
   let lastHref = "";
@@ -258,6 +266,8 @@
       if (!isItemPage()) refreshCards();
     }, 300);
   });
+
+  console.log("[Avito Notes] v1.3.0 запущен на", location.href, "| страница объявления:", isItemPage());
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
   injectStyles();
