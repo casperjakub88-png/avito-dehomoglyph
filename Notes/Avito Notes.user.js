@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.5.0
+// @version      1.6.0
 // @description  Заметки и дизлайк к объявлениям Avito — видны и редактируются на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -51,6 +51,9 @@
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   margin: 2px 0 6px; padding: 0;
 }
+/* вариант «в строку с кнопкой Избранное» — компактнее, не на всю ширину */
+.an-item-bar.an-inline { margin: 0 0 0 12px; flex: 1 1 auto; min-width: 220px; }
+.an-item-bar.an-inline .an-note-input { min-width: 90px; }
 .an-dislike-btn {
   display: inline-flex; align-items: center; gap: 4px;
   font-size: 13px; cursor: pointer; border: 1px solid #d1d5db;
@@ -157,33 +160,53 @@
     return bar;
   }
 
-  // Якорь: вставляем виджет ВНУТРЬ блока заголовка, сразу после h1 — ближе к заголовку.
+  // Вставка виджета на странице объявления.
+  // Приоритет: справа от кнопки «Добавить в избранное» (в той же flex-строке).
+  // Иначе — внутрь блока заголовка под h1.
   function injectItemWidget(id) {
     if (document.querySelector("[data-an-id='" + id + "']")) return false;
+
+    const fav = document.querySelector(
+      "[data-marker='item-view/favorite-button'],[data-marker='favorite-button']"
+    );
+    if (fav) {
+      // поднимаемся до ближайшего flex-контейнера и добавляем виджет в конец (= справа)
+      let row = fav.parentElement;
+      for (let i = 0; i < 5 && row; i++) {
+        const d = getComputedStyle(row).display;
+        if (d === "flex" || d === "inline-flex") break;
+        row = row.parentElement;
+      }
+      if (row) {
+        const bar = buildItemBar(id);
+        bar.classList.add("an-inline");
+        row.appendChild(bar);
+        return true;
+      }
+    }
+
     const titleBox =
       document.querySelector(".js-item-view-title-info") ||
       document.querySelector("[data-marker='item-view/title-info']");
-    const bar = buildItemBar(id);
-    if (titleBox) {
-      // вставить как первый элемент после заголовка внутри блока
-      titleBox.appendChild(bar);
-      return true;
-    }
-    // fallback на блок цены/действий
+    if (titleBox) { titleBox.appendChild(buildItemBar(id)); return true; }
+
     const alt = document.querySelector(
       "[data-marker='item-view/item-price'],[data-marker='item-view/price'],[data-marker='item-view/item-actions']"
     );
-    if (alt) { alt.parentNode.insertBefore(bar, alt.nextSibling); return true; }
+    if (alt) { const bar = buildItemBar(id); alt.parentNode.insertBefore(bar, alt.nextSibling); return true; }
     return false;
   }
 
   // ── Мини-виджет в карточке поиска (интерактивный) ──────────────────────────
   function stopCard(e) { e.stopPropagation(); }
-  // на ссылках-карточках клик/нажатие не должны вести на объявление
+  // На карточках-ссылках клик по нашему виджету не должен открывать объявление.
+  // ВАЖНО: слушаем в фазе ВСПЛЫТИЯ (bubble), а не перехвата — иначе stopPropagation
+  // на родителе не даёт событию дойти до дочерней кнопки дизлайка.
   function killNav(el) {
-    ["click", "mousedown", "mouseup", "pointerdown", "touchstart"].forEach((ev) =>
-      el.addEventListener(ev, (e) => { e.stopPropagation(); }, true)
+    ["mousedown", "mouseup", "pointerdown", "touchstart", "auxclick"].forEach((ev) =>
+      el.addEventListener(ev, (e) => { e.stopPropagation(); }, false)
     );
+    el.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); }, false);
   }
 
   function buildCardWidget(id) {
@@ -305,7 +328,7 @@
     }, 150);
   });
 
-  console.log("[Avito Notes] v1.5.0 запущен на", location.href, "| страница объявления:", isItemPage());
+  console.log("[Avito Notes] v1.6.0 запущен на", location.href, "| страница объявления:", isItemPage());
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
   injectStyles();
