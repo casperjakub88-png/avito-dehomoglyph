@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.3.0
+// @version      1.4.0
 // @description  Заметки и дизлайк к объявлениям Avito — видны на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -240,38 +240,38 @@
     if (cur === lastHref) return;
     lastHref = cur;
     injectStyles();
-
-    if (isItemPage()) {
-      const id = idFromUrl();
-      if (!id) return;
-      // повторяем пока не найдём якорь (React рендерит асинхронно)
-      let n = 20;
-      const tick = () => {
-        if (injectItemWidget(id)) return;
-        if (--n > 0) setTimeout(tick, 300);
-      };
-      tick();
-    } else {
-      // поиск: дать React отрисовать карточки
-      setTimeout(refreshCards, 300);
-    }
+    // дальнейшую вставку обеспечивает observer (ensure*) — React рендерит асинхронно
+    if (!isItemPage()) setTimeout(refreshCards, 300);
   }
 
-  // MutationObserver — ловим подгрузку карточек при скролле
+  // Гарантировать наличие виджета на странице объявления.
+  // React при ре-рендере удаляет наш узел — поэтому проверяем и вставляем заново.
+  function ensureItemWidget() {
+    if (!isItemPage()) return;
+    const id = idFromUrl();
+    if (!id) return;
+    if (document.querySelector("[data-an-id='" + id + "']")) return;
+    injectItemWidget(id);
+  }
+
+  // MutationObserver — реагируем на ре-рендеры React: восстанавливаем виджет,
+  // обновляем бейджи карточек, ловим SPA-навигацию.
   let moTimer = null;
   const observer = new MutationObserver(() => {
     clearTimeout(moTimer);
     moTimer = setTimeout(() => {
       if (location.href !== lastHref) { onNavigate(); return; }
-      if (!isItemPage()) refreshCards();
-    }, 300);
+      if (isItemPage()) ensureItemWidget();
+      else refreshCards();
+    }, 150);
   });
 
-  console.log("[Avito Notes] v1.3.0 запущен на", location.href, "| страница объявления:", isItemPage());
+  console.log("[Avito Notes] v1.4.0 запущен на", location.href, "| страница объявления:", isItemPage());
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
   injectStyles();
   onNavigate();
+  ensureItemWidget();
 
   // перехват SPA-навигации
   ["pushState", "replaceState"].forEach((fn) => {
