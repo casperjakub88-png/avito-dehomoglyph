@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.10.0
+// @version      1.11.0
 // @description  Заметки и дизлайк к объявлениям Avito — видны и редактируются на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -51,9 +51,10 @@
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   margin: 2px 0 6px; padding: 0;
 }
-/* вариант «в строку с кнопкой Избранное» — компактнее, не на всю ширину */
-.an-item-bar.an-inline { margin: 0 0 0 12px; flex: 1 1 auto; min-width: 220px; }
-.an-item-bar.an-inline .an-note-input { min-width: 90px; }
+/* вариант «в строку с кнопкой Избранное» — тянется до конца колонки */
+.an-item-bar.an-inline { margin: 0 0 0 12px; flex: 1 1 auto; min-width: 0; }
+.an-item-bar.an-inline .an-note-wrap { flex: 1 1 auto; min-width: 0; }
+.an-item-bar.an-inline .an-note-input { flex: 1 1 auto; min-width: 0; }
 .an-dislike-btn {
   flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center;
@@ -206,7 +207,23 @@
         const bar = buildItemBar(id);
         bar.classList.add("an-inline");
         row.appendChild(bar);
-        if (isVisible(bar)) return true;
+        if (isVisible(bar)) {
+          // заставить строку кнопки (и её flex-предков) занять всю ширину колонки,
+          // иначе строка сжимается по содержимому и заметка не тянется до конца
+          let p = row;
+          for (let i = 0; i < 4 && p && p !== document.body; i++) {
+            const parent = p.parentElement;
+            if (parent) {
+              const pd = getComputedStyle(parent).display;
+              if (pd === "flex" || pd === "inline-flex") {
+                p.style.flexGrow = "1";
+                p.style.minWidth = "0";
+              }
+            }
+            p = parent;
+          }
+          return true;
+        }
         bar.remove(); // вставилось, но невидимо — пробуем под заголовком
       }
     }
@@ -345,7 +362,7 @@
     }, 150);
   });
 
-  console.log("[Avito Notes] v1.10.0 запущен на", location.href, "| страница объявления:", isItemPage());
+  console.log("[Avito Notes] v1.11.0 запущен на", location.href, "| страница объявления:", isItemPage());
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
   injectStyles();
