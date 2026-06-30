@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.6.0
+// @version      1.7.0
 // @description  Заметки и дизлайк к объявлениям Avito — видны и редактируются на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -160,17 +160,37 @@
     return bar;
   }
 
+  function isVisible(el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return el.offsetParent !== null && r.width > 0 && r.height > 0;
+  }
+
+  function insertUnderTitle(id) {
+    const titleBox =
+      document.querySelector(".js-item-view-title-info") ||
+      document.querySelector("[data-marker='item-view/title-info']");
+    if (titleBox) { titleBox.appendChild(buildItemBar(id)); return true; }
+    const alt = document.querySelector(
+      "[data-marker='item-view/item-price'],[data-marker='item-view/price'],[data-marker='item-view/item-actions']"
+    );
+    if (alt) { const bar = buildItemBar(id); alt.parentNode.insertBefore(bar, alt.nextSibling); return true; }
+    return false;
+  }
+
   // Вставка виджета на странице объявления.
-  // Приоритет: справа от кнопки «Добавить в избранное» (в той же flex-строке).
-  // Иначе — внутрь блока заголовка под h1.
+  // Приоритет: справа от ВИДИМОЙ кнопки «Добавить в избранное» (та же flex-строка).
+  // Если так виджет не отобразился — откат под заголовок.
   function injectItemWidget(id) {
     if (document.querySelector("[data-an-id='" + id + "']")) return false;
 
-    const fav = document.querySelector(
+    // выбрать видимую кнопку избранного (на странице бывает дубль в шапке)
+    const favs = [...document.querySelectorAll(
       "[data-marker='item-view/favorite-button'],[data-marker='favorite-button']"
-    );
+    )];
+    const fav = favs.find(isVisible);
+
     if (fav) {
-      // поднимаемся до ближайшего flex-контейнера и добавляем виджет в конец (= справа)
       let row = fav.parentElement;
       for (let i = 0; i < 5 && row; i++) {
         const d = getComputedStyle(row).display;
@@ -181,20 +201,12 @@
         const bar = buildItemBar(id);
         bar.classList.add("an-inline");
         row.appendChild(bar);
-        return true;
+        if (isVisible(bar)) return true;
+        bar.remove(); // вставилось, но невидимо — пробуем под заголовком
       }
     }
 
-    const titleBox =
-      document.querySelector(".js-item-view-title-info") ||
-      document.querySelector("[data-marker='item-view/title-info']");
-    if (titleBox) { titleBox.appendChild(buildItemBar(id)); return true; }
-
-    const alt = document.querySelector(
-      "[data-marker='item-view/item-price'],[data-marker='item-view/price'],[data-marker='item-view/item-actions']"
-    );
-    if (alt) { const bar = buildItemBar(id); alt.parentNode.insertBefore(bar, alt.nextSibling); return true; }
-    return false;
+    return insertUnderTitle(id);
   }
 
   // ── Мини-виджет в карточке поиска (интерактивный) ──────────────────────────
@@ -328,7 +340,7 @@
     }, 150);
   });
 
-  console.log("[Avito Notes] v1.6.0 запущен на", location.href, "| страница объявления:", isItemPage());
+  console.log("[Avito Notes] v1.7.0 запущен на", location.href, "| страница объявления:", isItemPage());
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
   injectStyles();
