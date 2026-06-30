@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.8.0
+// @version      1.9.0
 // @description  Заметки и дизлайк к объявлениям Avito — видны и редактируются на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -140,21 +140,13 @@
     input.placeholder = "Заметка к объявлению…";
     input.value = entry.note || "";
     input.onclick = (e) => e.stopPropagation();
-
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.className = "an-save-btn";
-    saveBtn.textContent = "Сохранить";
-    saveBtn.onclick = (e) => {
-      e.stopPropagation();
-      setEntry(id, { note: input.value.trim() });
-      saveBtn.textContent = "✓";
-      setTimeout(() => { saveBtn.textContent = "Сохранить"; }, 1200);
-    };
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") saveBtn.click(); });
+    // автосохранение (без кнопки): по Enter и при потере фокуса
+    const save = () => setEntry(id, { note: input.value.trim() });
+    input.addEventListener("change", save);
+    input.addEventListener("blur", save);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
 
     noteWrap.appendChild(input);
-    noteWrap.appendChild(saveBtn);
     bar.appendChild(dislikeBtn);
     bar.appendChild(noteWrap);
     return bar;
@@ -351,7 +343,7 @@
     }, 150);
   });
 
-  console.log("[Avito Notes] v1.8.0 запущен на", location.href, "| страница объявления:", isItemPage());
+  console.log("[Avito Notes] v1.9.0 запущен на", location.href, "| страница объявления:", isItemPage());
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
   injectStyles();
