@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.11.0
+// @version      1.12.0
 // @description  Заметки и дизлайк к объявлениям Avito — видны и редактируются на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -22,12 +22,16 @@
     try { localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {}
   }
   function getEntry(id) {
-    return loadAll()[id] || { note: "", dislike: false };
+    return loadAll()[id] || { note: "", dislike: false, like: false };
   }
   function setEntry(id, patch) {
     const data = loadAll();
-    data[id] = Object.assign(getEntry(id), patch);
-    if (!data[id].note && !data[id].dislike) delete data[id];
+    const next = Object.assign(getEntry(id), patch);
+    // лайк и дизлайк взаимоисключающие
+    if (patch.like) next.dislike = false;
+    if (patch.dislike) next.like = false;
+    data[id] = next;
+    if (!next.note && !next.dislike && !next.like) delete data[id];
     saveAll(data);
   }
 
@@ -55,7 +59,7 @@
 .an-item-bar.an-inline { margin: 0 0 0 12px; flex: 1 1 auto; min-width: 0; }
 .an-item-bar.an-inline .an-note-wrap { flex: 1 1 auto; min-width: 0; }
 .an-item-bar.an-inline .an-note-input { flex: 1 1 auto; min-width: 0; }
-.an-dislike-btn {
+.an-like-btn, .an-dislike-btn {
   flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 18px; line-height: 1; cursor: pointer; border: 1px solid #d1d5db;
@@ -66,6 +70,8 @@
 }
 .an-dislike-btn.on { background: #b91c1c; border-color: #b91c1c; filter: none; }
 .an-dislike-btn:hover:not(.on) { background: #fee2e2; border-color: #fca5a5; filter: none; }
+.an-like-btn.on { background: #16a34a; border-color: #16a34a; filter: none; }
+.an-like-btn:hover:not(.on) { background: #dcfce7; border-color: #86efac; filter: none; }
 .an-note-wrap { display: flex; gap: 6px; align-items: center; flex: 1; min-width: 160px; }
 .an-note-input {
   flex: 1; font-size: 13px; border: 1px solid #d1d5db; border-radius: 8px;
@@ -84,7 +90,7 @@
   display: flex; align-items: center; gap: 6px;
   padding: 4px 0 0; margin-top: 2px; width: 100%;
 }
-.an-card-dislike {
+.an-card-like, .an-card-dislike {
   flex: 0 0 auto; cursor: pointer; user-select: none;
   font-size: 18px; line-height: 1; border: 1px solid #d1d5db;
   background: #fff; border-radius: 8px; padding: 3px 7px;
@@ -93,6 +99,8 @@
 }
 .an-card-dislike:hover { background: #fee2e2; border-color: #fca5a5; filter: none; }
 .an-card-dislike.on { background: #b91c1c; border-color: #b91c1c; filter: none; }
+.an-card-like:hover { background: #dcfce7; border-color: #86efac; filter: none; }
+.an-card-like.on { background: #16a34a; border-color: #16a34a; filter: none; }
 .an-card-note {
   flex: 1 1 auto; min-width: 60px;
   font-size: 13px; border: 1px solid #d1d5db; border-radius: 8px;
@@ -101,10 +109,14 @@
 }
 .an-card-note:focus { outline: none; border-color: #6366f1; background: #fff; }
 
-/* ── подсветка дизлайкнутого объявления ── */
+/* ── подсветка объявления ── */
 .an-disliked {
   background: #fff1f1 !important;
   outline: 2px solid #f3b4b4; outline-offset: -2px; border-radius: 10px;
+}
+.an-liked {
+  background: #f0fdf4 !important;
+  outline: 2px solid #86efac; outline-offset: -2px; border-radius: 10px;
 }
 `;
 
@@ -123,16 +135,25 @@
     bar.className = "an-item-bar";
     bar.setAttribute("data-an-id", id);
 
+    const likeBtn = document.createElement("button");
+    likeBtn.type = "button";
+    likeBtn.className = "an-like-btn" + (entry.like ? " on" : "");
+    likeBtn.textContent = "👍";
+    likeBtn.title = "Лайк / снять";
+
     const dislikeBtn = document.createElement("button");
     dislikeBtn.type = "button";
     dislikeBtn.className = "an-dislike-btn" + (entry.dislike ? " on" : "");
     dislikeBtn.textContent = "👎";
     dislikeBtn.title = "Дизлайк / снять";
-    dislikeBtn.onclick = () => {
-      const next = !getEntry(id).dislike;
-      setEntry(id, { dislike: next });
-      dislikeBtn.className = "an-dislike-btn" + (next ? " on" : "");
+
+    const syncBtns = () => {
+      const e = getEntry(id);
+      likeBtn.className = "an-like-btn" + (e.like ? " on" : "");
+      dislikeBtn.className = "an-dislike-btn" + (e.dislike ? " on" : "");
     };
+    likeBtn.onclick = () => { setEntry(id, { like: !getEntry(id).like }); syncBtns(); };
+    dislikeBtn.onclick = () => { setEntry(id, { dislike: !getEntry(id).dislike }); syncBtns(); };
 
     const noteWrap = document.createElement("div");
     noteWrap.className = "an-note-wrap";
@@ -150,6 +171,7 @@
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
 
     noteWrap.appendChild(input);
+    bar.appendChild(likeBtn);
     bar.appendChild(dislikeBtn);
     bar.appendChild(noteWrap);
     return bar;
@@ -249,14 +271,23 @@
     wrap.setAttribute("data-an-card", id);
     killNav(wrap);
 
+    const likeBtn = document.createElement("div");
+    likeBtn.className = "an-card-like";
+    likeBtn.textContent = "👍";
+    likeBtn.title = "Лайк / снять";
+    likeBtn.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      setEntry(id, { like: !getEntry(id).like });
+      syncCardWidget(wrap, id);
+    });
+
     const dislikeBtn = document.createElement("div");
     dislikeBtn.className = "an-card-dislike";
     dislikeBtn.textContent = "👎";
     dislikeBtn.title = "Дизлайк / снять";
     dislikeBtn.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation();
-      const next = !getEntry(id).dislike;
-      setEntry(id, { dislike: next });
+      setEntry(id, { dislike: !getEntry(id).dislike });
       syncCardWidget(wrap, id);
     });
 
@@ -273,8 +304,10 @@
     input.addEventListener("change", save);
     input.addEventListener("blur", save);
 
+    wrap._like = likeBtn;
     wrap._dislike = dislikeBtn;
     wrap._input = input;
+    wrap.appendChild(likeBtn);
     wrap.appendChild(dislikeBtn);
     wrap.appendChild(input);
     return wrap;
@@ -284,10 +317,14 @@
   // Не трогаем input.value, если поле в фокусе (пользователь печатает).
   function syncCardWidget(wrap, id) {
     const entry = getEntry(id);
+    wrap._like.classList.toggle("on", !!entry.like);
     wrap._dislike.classList.toggle("on", !!entry.dislike);
     if (document.activeElement !== wrap._input) wrap._input.value = entry.note || "";
     const card = wrap.closest("[data-marker='item'],[class*='iva-item-content']") || wrap.parentElement;
-    if (card) card.classList.toggle("an-disliked", !!entry.dislike);
+    if (card) {
+      card.classList.toggle("an-disliked", !!entry.dislike);
+      card.classList.toggle("an-liked", !!entry.like);
+    }
   }
 
   function ensureCardWidget(card) {
@@ -362,7 +399,7 @@
     }, 150);
   });
 
-  console.log("[Avito Notes] v1.11.0 запущен на", location.href, "| страница объявления:", isItemPage());
+  console.log("[Avito Notes] v1.12.0 запущен на", location.href, "| страница объявления:", isItemPage());
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
   injectStyles();
