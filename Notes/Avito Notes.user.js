@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.9.0
+// @version      1.10.0
 // @description  Заметки и дизлайк к объявлениям Avito — видны и редактируются на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -55,14 +55,16 @@
 .an-item-bar.an-inline { margin: 0 0 0 12px; flex: 1 1 auto; min-width: 220px; }
 .an-item-bar.an-inline .an-note-input { min-width: 90px; }
 .an-dislike-btn {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: 13px; cursor: pointer; border: 1px solid #d1d5db;
-  background: #fff; border-radius: 8px; padding: 5px 12px;
-  transition: background .15s, color .15s, border-color .15s;
-  user-select: none; white-space: nowrap; font-family: inherit; line-height: 1.2;
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 18px; line-height: 1; cursor: pointer; border: 1px solid #d1d5db;
+  background: #fff; border-radius: 8px; padding: 4px 8px;
+  transition: background .15s, border-color .15s, filter .15s;
+  user-select: none; white-space: nowrap; font-family: inherit;
+  filter: grayscale(1) opacity(.65);
 }
-.an-dislike-btn.on { background: #b91c1c; color: #fff; border-color: #b91c1c; }
-.an-dislike-btn:hover:not(.on) { background: #fee2e2; border-color: #fca5a5; }
+.an-dislike-btn.on { background: #b91c1c; border-color: #b91c1c; filter: none; }
+.an-dislike-btn:hover:not(.on) { background: #fee2e2; border-color: #fca5a5; filter: none; }
 .an-note-wrap { display: flex; gap: 6px; align-items: center; flex: 1; min-width: 160px; }
 .an-note-input {
   flex: 1; font-size: 13px; border: 1px solid #d1d5db; border-radius: 8px;
@@ -123,12 +125,12 @@
     const dislikeBtn = document.createElement("button");
     dislikeBtn.type = "button";
     dislikeBtn.className = "an-dislike-btn" + (entry.dislike ? " on" : "");
-    dislikeBtn.textContent = entry.dislike ? "👎 Снять дизлайк" : "👎 Дизлайк";
+    dislikeBtn.textContent = "👎";
+    dislikeBtn.title = "Дизлайк / снять";
     dislikeBtn.onclick = () => {
       const next = !getEntry(id).dislike;
       setEntry(id, { dislike: next });
       dislikeBtn.className = "an-dislike-btn" + (next ? " on" : "");
-      dislikeBtn.textContent = next ? "👎 Снять дизлайк" : "👎 Дизлайк";
     };
 
     const noteWrap = document.createElement("div");
@@ -343,7 +345,7 @@
     }, 150);
   });
 
-  console.log("[Avito Notes] v1.9.0 запущен на", location.href, "| страница объявления:", isItemPage());
+  console.log("[Avito Notes] v1.10.0 запущен на", location.href, "| страница объявления:", isItemPage());
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
   injectStyles();
