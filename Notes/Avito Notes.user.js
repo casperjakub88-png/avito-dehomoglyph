@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.7.0
+// @version      1.8.0
 // @description  Заметки и дизлайк к объявлениям Avito — видны и редактируются на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -165,6 +165,12 @@
     const r = el.getBoundingClientRect();
     return el.offsetParent !== null && r.width > 0 && r.height > 0;
   }
+  // видим И в пределах прокручиваемого документа (не в скрытой залипающей шапке вверху)
+  function isVisibleInDoc(el) {
+    if (!isVisible(el)) return false;
+    const r = el.getBoundingClientRect();
+    return r.bottom > 0; // не уехал выше вьюпорта (дубль из шапки имеет top < 0)
+  }
 
   function insertUnderTitle(id) {
     const titleBox =
@@ -184,11 +190,16 @@
   function injectItemWidget(id) {
     if (document.querySelector("[data-an-id='" + id + "']")) return false;
 
-    // выбрать видимую кнопку избранного (на странице бывает дубль в шапке)
+    // выбрать НАСТОЯЩУЮ кнопку «Добавить в избранное» (с текстом, широкую),
+    // а не иконку-сердечко и не дубль в скрытой залипающей шапке (top < 0).
     const favs = [...document.querySelectorAll(
       "[data-marker='item-view/favorite-button'],[data-marker='favorite-button']"
-    )];
-    const fav = favs.find(isVisible);
+    )].filter(isVisibleInDoc);
+    const fav =
+      favs.find((b) => /збранн/i.test(b.textContent || "")) ||
+      favs.sort((a, b) =>
+        b.getBoundingClientRect().width - a.getBoundingClientRect().width
+      )[0];
 
     if (fav) {
       let row = fav.parentElement;
@@ -340,7 +351,7 @@
     }, 150);
   });
 
-  console.log("[Avito Notes] v1.7.0 запущен на", location.href, "| страница объявления:", isItemPage());
+  console.log("[Avito Notes] v1.8.0 запущен на", location.href, "| страница объявления:", isItemPage());
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
   injectStyles();
