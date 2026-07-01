@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.13.0
+// @version      1.14.0
 // @description  Заметки и дизлайк к объявлениям Avito — видны и редактируются на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -278,16 +278,13 @@
   function injectItemWidget(id) {
     if (document.querySelector("[data-an-id='" + id + "']")) return false;
 
-    // выбрать НАСТОЯЩУЮ кнопку «Добавить в избранное» (с текстом, широкую),
-    // а не иконку-сердечко и не дубль в скрытой залипающей шапке (top < 0).
+    // Пристыковываемся ТОЛЬКО к текстовой кнопке «Добавить в избранное».
+    // Иконку-сердечко (у товарных объявлений рядом с ценой) НЕ трогаем —
+    // иначе виджет наезжает на цену. В этом случае — откат под заголовок.
     const favs = [...document.querySelectorAll(
       "[data-marker='item-view/favorite-button'],[data-marker='favorite-button']"
     )].filter(isVisibleInDoc);
-    const fav =
-      favs.find((b) => /збранн/i.test(b.textContent || "")) ||
-      favs.sort((a, b) =>
-        b.getBoundingClientRect().width - a.getBoundingClientRect().width
-      )[0];
+    const fav = favs.find((b) => /збранн/i.test(b.textContent || ""));
 
     if (fav) {
       let row = fav.parentElement;
@@ -498,7 +495,7 @@
     }, 150);
   });
 
-  console.log("[Avito Notes] v1.13.0 запущен на", location.href, "| страница объявления:", isItemPage());
+  console.log("[Avito Notes] v1.14.0 запущен на", location.href, "| страница объявления:", isItemPage());
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
   injectStyles();
