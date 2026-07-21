@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.15.0
+// @version      1.16.0
 // @description  Заметки и дизлайк к объявлениям Avito — видны и редактируются на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -94,12 +94,19 @@
     return a ? sellerIdFromHref(a.getAttribute("href") || a.href) : null;
   }
   function sellerIdOnItemPage() {
-    const a = document.querySelector(
-      "a[href*='/user/'], a[href*='/brands/'], [data-marker='seller-info/name']"
-    );
-    if (!a) return null;
-    const href = a.getAttribute("href") || a.href || "";
-    return sellerIdFromHref(href) || sellerIdFromHref(a.closest("a")?.href);
+    // сперва прямая ссылка на профиль
+    const link = document.querySelector("a[href*='/user/'], a[href*='/brands/']");
+    if (link) {
+      const id = sellerIdFromHref(link.getAttribute("href") || link.href || "");
+      if (id) return id;
+    }
+    // иначе — блок с именем продавца, обёрнутый в ссылку
+    const nameBlock = document.querySelector("[data-marker='seller-info/name']");
+    if (nameBlock) {
+      const wrapA = nameBlock.closest("a") || nameBlock.querySelector("a");
+      if (wrapA) return sellerIdFromHref(wrapA.getAttribute("href") || wrapA.href || "");
+    }
+    return null;
   }
 
   // ── Извлечь ID объявления ──────────────────────────────────────────────────
@@ -184,7 +191,7 @@
 
 /* ── мини-виджет в карточке поиска ── */
 .an-card-wrap {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
   padding: 4px 0 0; margin-top: 2px; width: 100%;
 }
 .an-card-like, .an-card-dislike {
@@ -199,7 +206,7 @@
 .an-card-like:hover { background: #dcfce7; border-color: #86efac; filter: none; }
 .an-card-like.on { background: #16a34a; border-color: #16a34a; filter: none; }
 .an-card-note {
-  flex: 1 1 auto; min-width: 60px;
+  flex: 1 1 80px; min-width: 60px;
   font-size: 13px; border: 1px solid #d1d5db; border-radius: 8px;
   padding: 4px 8px; box-sizing: border-box; font-family: inherit;
   background: #fffdf5;
@@ -578,7 +585,7 @@
     }, 150);
   });
 
-  console.log("[Avito Notes] v1.15.0 запущен на", location.href, "| страница объявления:", isItemPage());
+  console.log("[Avito Notes] v1.16.0 запущен на", location.href, "| страница объявления:", isItemPage());
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
   injectStyles();
