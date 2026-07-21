@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Avito Notes & Dislike
 // @namespace    avito-notes
-// @version      1.14.0
+// @version      1.15.0
 // @description  Заметки и дизлайк к объявлениям Avito — видны и редактируются на карточке и в поиске
 // @match        *://www.avito.ru/*
 // @match        *://*.avito.ru/*
@@ -13,9 +13,11 @@
   "use strict";
 
   // ── Хранилище ──────────────────────────────────────────────────────────────
-  // Два уровня: по ID объявления (точечно) и по НАЗВАНИЮ (на все дубли продавца).
-  const LS_KEY = "avito_notes_v1";       // { id: {note,dislike,like} }
+  // Три уровня: по ID объявления (точечно), по НАЗВАНИЮ (дубли продавца в разных
+  // городах) и по ПРОДАВЦУ (чёрный список — все объявления этого продавца красным).
+  const LS_KEY = "avito_notes_v1";        // { id: {note,dislike,like} }
   const LS_TKEY = "avito_notes_title_v1"; // { normTitle: {note,dislike,like} }
+  const LS_SKEY = "avito_notes_seller_v1"; // { sellerId: true }
   const EMPTY = { note: "", dislike: false, like: false };
 
   function load(key) {
@@ -26,6 +28,17 @@
   }
   const loadAll = () => load(LS_KEY);
   const loadTitles = () => load(LS_TKEY);
+  const loadSellers = () => load(LS_SKEY);
+
+  function setSellerBlacklist(sellerId, on) {
+    if (!sellerId) return;
+    const data = loadSellers();
+    if (on) data[sellerId] = true; else delete data[sellerId];
+    store(LS_SKEY, data);
+  }
+  function isSellerBlacklisted(sellerId) {
+    return !!(sellerId && loadSellers()[sellerId]);
+  }
 
   function normTitle(t) {
     return (t || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -48,23 +61,45 @@
     store(LS_TKEY, data);
   }
 
-  // Эффективная запись: уровень ID перекрывает уровень названия.
-  function effEntry(id, title) {
+  // Эффективная запись: уровень ID перекрывает уровень названия, тот — уровень продавца.
+  function effEntry(id, title, sellerId) {
     const all = loadAll();
     if (id && Object.prototype.hasOwnProperty.call(all, id)) return all[id];
     const k = normTitle(title);
     if (k) { const t = loadTitles()[k]; if (t) return t; }
+    if (isSellerBlacklisted(sellerId)) return { note: "", dislike: true, like: false };
     return EMPTY;
   }
 
   // Переключить лайк/дизлайк с сохранением остальных полей (материализует в ID-уровень).
-  function toggleVote(id, title, field) {
-    const cur = effEntry(id, title);
+  function toggleVote(id, title, sellerId, field) {
+    const cur = effEntry(id, title, sellerId);
     const next = { note: cur.note, like: cur.like, dislike: cur.dislike };
     next[field] = !cur[field];
     if (field === "like" && next.like) next.dislike = false;
     if (field === "dislike" && next.dislike) next.like = false;
     setEntryFull(id, next);
+  }
+
+  // ── Извлечь ID продавца ─────────────────────────────────────────────────────
+  function sellerIdFromHref(href) {
+    if (!href) return null;
+    const m = href.match(/\/(?:user|brands)\/([a-zA-Z0-9_-]+)/);
+    return m ? m[1] : null;
+  }
+  function sellerIdFromCard(card) {
+    const a = card.querySelector(
+      "a[href*='/user/'], a[href*='/brands/'], [data-marker='seller-link'] a"
+    );
+    return a ? sellerIdFromHref(a.getAttribute("href") || a.href) : null;
+  }
+  function sellerIdOnItemPage() {
+    const a = document.querySelector(
+      "a[href*='/user/'], a[href*='/brands/'], [data-marker='seller-info/name']"
+    );
+    if (!a) return null;
+    const href = a.getAttribute("href") || a.href || "";
+    return sellerIdFromHref(href) || sellerIdFromHref(a.closest("a")?.href);
   }
 
   // ── Извлечь ID объявления ──────────────────────────────────────────────────
@@ -135,6 +170,18 @@
 .an-all-btn.on { background: #4338ca; color: #fff; border-color: #4338ca; }
 .an-card-wrap .an-all-btn { font-size: 11px; padding: 4px 7px; }
 
+/* кнопка «весь продавец» (чёрный список продавца) */
+.an-seller-btn {
+  flex: 0 0 auto; cursor: pointer; user-select: none;
+  font-size: 12px; line-height: 1; border: 1px solid #fecaca; color: #b91c1c;
+  background: #fef2f2; border-radius: 8px; padding: 5px 8px;
+  white-space: nowrap; transition: background .15s, color .15s, border-color .15s;
+}
+.an-seller-btn:hover { background: #fee2e2; border-color: #fca5a5; }
+.an-seller-btn.on { background: #b91c1c; color: #fff; border-color: #b91c1c; }
+.an-seller-btn.disabled { opacity: .35; cursor: default; pointer-events: none; }
+.an-card-wrap .an-seller-btn { font-size: 14px; padding: 3px 7px; }
+
 /* ── мини-виджет в карточке поиска ── */
 .an-card-wrap {
   display: flex; align-items: center; gap: 6px;
@@ -181,6 +228,7 @@
   // ── Виджет на странице объявления ─────────────────────────────────────────
   function buildItemBar(id) {
     const title = itemTitleText();
+    const sellerId = sellerIdOnItemPage();
     const bar = document.createElement("div");
     bar.className = "an-item-bar";
     bar.setAttribute("data-an-id", id);
@@ -210,19 +258,27 @@
     allBtn.textContent = "ко всем";
     allBtn.title = "Применить лайк/дизлайк и заметку ко всем объявлениям с таким же названием";
 
+    const sellerBtn = document.createElement("button");
+    sellerBtn.type = "button";
+    sellerBtn.className = "an-seller-btn";
+    sellerBtn.textContent = "🚫 продавец";
+    sellerBtn.title = "Пометить красным все объявления этого продавца";
+    if (!sellerId) { sellerBtn.disabled = true; sellerBtn.title = "Не удалось определить продавца"; }
+
     const sync = () => {
-      const e = effEntry(id, title);
+      const e = effEntry(id, title, sellerId);
       likeBtn.className = "an-like-btn" + (e.like ? " on" : "");
       dislikeBtn.className = "an-dislike-btn" + (e.dislike ? " on" : "");
       if (document.activeElement !== input) input.value = e.note || "";
       const k = normTitle(title);
       allBtn.classList.toggle("on", !!(k && loadTitles()[k]));
+      sellerBtn.classList.toggle("on", isSellerBlacklisted(sellerId));
     };
 
-    likeBtn.onclick = () => { toggleVote(id, title, "like"); sync(); };
-    dislikeBtn.onclick = () => { toggleVote(id, title, "dislike"); sync(); };
+    likeBtn.onclick = () => { toggleVote(id, title, sellerId, "like"); sync(); };
+    dislikeBtn.onclick = () => { toggleVote(id, title, sellerId, "dislike"); sync(); };
     const save = () => {
-      const cur = effEntry(id, title);
+      const cur = effEntry(id, title, sellerId);
       setEntryFull(id, { note: input.value.trim(), like: cur.like, dislike: cur.dislike });
     };
     input.addEventListener("change", save);
@@ -234,9 +290,14 @@
       if (k && loadTitles()[k]) {
         setTitleFull(title, EMPTY); // повторное нажатие — снять со всех
       } else {
-        const cur = effEntry(id, title);
+        const cur = effEntry(id, title, sellerId);
         setTitleFull(title, { note: cur.note, like: cur.like, dislike: cur.dislike });
       }
+      sync();
+    };
+
+    sellerBtn.onclick = () => {
+      setSellerBlacklist(sellerId, !isSellerBlacklisted(sellerId));
       sync();
     };
 
@@ -244,6 +305,7 @@
     bar.appendChild(dislikeBtn);
     bar.appendChild(noteWrap);
     bar.appendChild(allBtn);
+    bar.appendChild(sellerBtn);
     sync();
     return bar;
   }
@@ -333,11 +395,12 @@
     el.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); }, false);
   }
 
-  function buildCardWidget(id, title) {
+  function buildCardWidget(id, title, sellerId) {
     const wrap = document.createElement("div");
     wrap.className = "an-card-wrap";
     wrap.setAttribute("data-an-card", id);
     wrap._title = title;
+    wrap._seller = sellerId;
     killNav(wrap);
 
     const likeBtn = document.createElement("div");
@@ -346,7 +409,7 @@
     likeBtn.title = "Лайк / снять";
     likeBtn.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation();
-      toggleVote(id, wrap._title, "like");
+      toggleVote(id, wrap._title, wrap._seller, "like");
       syncCardWidget(wrap, id);
     });
 
@@ -356,7 +419,7 @@
     dislikeBtn.title = "Дизлайк / снять";
     dislikeBtn.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation();
-      toggleVote(id, wrap._title, "dislike");
+      toggleVote(id, wrap._title, wrap._seller, "dislike");
       syncCardWidget(wrap, id);
     });
 
@@ -370,7 +433,7 @@
       if (e.key === "Enter") { input.blur(); }
     });
     const save = () => {
-      const cur = effEntry(id, wrap._title);
+      const cur = effEntry(id, wrap._title, wrap._seller);
       setEntryFull(id, { note: input.value.trim(), like: cur.like, dislike: cur.dislike });
       syncCardWidget(wrap, id);
     };
@@ -387,9 +450,24 @@
       const k = normTitle(wrap._title);
       if (k && loadTitles()[k]) setTitleFull(wrap._title, EMPTY);
       else {
-        const cur = effEntry(id, wrap._title);
+        const cur = effEntry(id, wrap._title, wrap._seller);
         setTitleFull(wrap._title, { note: cur.note, like: cur.like, dislike: cur.dislike });
       }
+      refreshCards();
+    });
+
+    // «продавец» — пометить красным (дизлайк) все объявления этого продавца
+    const sellerBtn = document.createElement("div");
+    sellerBtn.className = "an-seller-btn";
+    sellerBtn.textContent = "🚫";
+    sellerBtn.title = sellerId
+      ? "Пометить красным все объявления этого продавца"
+      : "Не удалось определить продавца";
+    if (!sellerId) sellerBtn.classList.add("disabled");
+    sellerBtn.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (!wrap._seller) return;
+      setSellerBlacklist(wrap._seller, !isSellerBlacklisted(wrap._seller));
       refreshCards();
     });
 
@@ -397,21 +475,24 @@
     wrap._dislike = dislikeBtn;
     wrap._input = input;
     wrap._all = allBtn;
+    wrap._sellerBtn = sellerBtn;
     wrap.appendChild(likeBtn);
     wrap.appendChild(dislikeBtn);
     wrap.appendChild(input);
     wrap.appendChild(allBtn);
+    wrap.appendChild(sellerBtn);
     return wrap;
   }
 
   // Синхронизировать состояние виджета и подсветку карточки со стораджем.
   // Не трогаем input.value, если поле в фокусе (пользователь печатает).
   function syncCardWidget(wrap, id) {
-    const entry = effEntry(id, wrap._title);
+    const entry = effEntry(id, wrap._title, wrap._seller);
     wrap._like.classList.toggle("on", !!entry.like);
     wrap._dislike.classList.toggle("on", !!entry.dislike);
     const k = normTitle(wrap._title);
     wrap._all.classList.toggle("on", !!(k && loadTitles()[k]));
+    wrap._sellerBtn.classList.toggle("on", isSellerBlacklisted(wrap._seller));
     if (document.activeElement !== wrap._input) wrap._input.value = entry.note || "";
     const card = wrap.closest("[data-marker='item'],[class*='iva-item-content']") || wrap.parentElement;
     if (card) {
@@ -424,12 +505,13 @@
     const id = idFromCard(card);
     if (!id) return;
     const title = titleFromCard(card);
+    const sellerId = sellerIdFromCard(card);
     let wrap = card.querySelector(":scope .an-card-wrap[data-an-card='" + id + "']");
     if (!wrap) {
       // убрать чужой/устаревший виджет, если был
       const stale = card.querySelector(":scope .an-card-wrap");
       if (stale) stale.remove();
-      wrap = buildCardWidget(id, title);
+      wrap = buildCardWidget(id, title, sellerId);
       const bottom =
         card.querySelector("[class*='iva-item-bottomBlock']") ||
         card.querySelector("[data-marker='item-line']") ||
@@ -438,8 +520,9 @@
         card.querySelector("[class*='iva-item-body']") ||
         card;
       bottom.appendChild(wrap);
-    } else if (title) {
-      wrap._title = title; // обновить на случай ре-рендера
+    } else {
+      if (title) wrap._title = title; // обновить на случай ре-рендера
+      if (sellerId) wrap._seller = sellerId;
     }
     syncCardWidget(wrap, id);
   }
@@ -495,7 +578,7 @@
     }, 150);
   });
 
-  console.log("[Avito Notes] v1.14.0 запущен на", location.href, "| страница объявления:", isItemPage());
+  console.log("[Avito Notes] v1.15.0 запущен на", location.href, "| страница объявления:", isItemPage());
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
   injectStyles();
